@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+data/store.json
+data/*.bak
+web/dist
+.DS_Store
+data

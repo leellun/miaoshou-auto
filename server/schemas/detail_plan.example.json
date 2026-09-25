@@ -1,0 +1,52 @@
+{
+  "schema": "detail_plan.v1",
+  "profile_schema": "product_profile.v1",
+  "market": {
+    "platform": "tiktok",
+    "site": "TH",
+    "language": "th"
+  },
+  "rationale": {
+    "count_reason": "按有证据的买家问题定页，不按原图张数翻页",
+    "sequence": "comprehension_to_decision"
+  },
+  "pages": [
+    {
+      "page": 1,
+      "type": "hero",
+      "title": "核心产品展示",
+      "buyer_question": "这是什么、长什么样",
+      "reference_images": ["img_01"],
+      "reference_roles": {
+        "img_01": "product_reference"
+      },
+      "copy": {
+        "headline": "",
+        "support": "",
+        "labels": []
+      },
+      "invariants": ["外形", "颜色", "可见结构"],
+      "excluded_claims": [],
+      "generate": true
+    },
+    {
+      "page": 2,
+      "type": "spec",
+      "title": "尺寸规格",
+      "buyer_question": "尺寸是否合适",
+      "reference_images": ["img_03", "img_04"],
+      "reference_roles": {
+        "img_03": "factual_evidence",
+        "img_04": "detail_reference"
+      },
+      "copy": {
+        "headline": "",
+        "support": "",
+        "labels": []
+      },
+      "invariants": ["只写 evidence 中的数字和单位"],
+      "excluded_claims": ["waterproof", "load_rating"],
+      "generate": true
+    }
+  ]
+}

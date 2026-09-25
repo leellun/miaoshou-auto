@@ -1,0 +1,80 @@
+{
+  "schema": "product_profile.v1",
+  "source": {
+    "platform": "1688",
+    "url": "",
+    "item_id": "",
+    "title": ""
+  },
+  "product": {
+    "name": "",
+    "category": "",
+    "description": "",
+    "identity": {
+      "shape": "",
+      "confirmed_colors": [],
+      "included_parts": []
+    }
+  },
+  "selling_points": [
+    {
+      "id": "sp_01",
+      "text": "",
+      "status": "confirmed",
+      "evidence": ["img_01"]
+    }
+  ],
+  "specs": {
+    "material": { "value": null, "unit": null, "status": "unknown", "evidence": [] },
+    "size": { "value": null, "unit": null, "status": "unknown", "evidence": [] },
+    "weight": { "value": null, "unit": null, "status": "unknown", "evidence": [] },
+    "package_size": { "value": null, "unit": "cm", "status": "unknown", "evidence": [] },
+    "colors": [
+      {
+        "name": "",
+        "status": "confirmed",
+        "evidence": ["img_01"],
+        "sku_scope": "unmapped"
+      }
+    ],
+    "other": [
+      {
+        "key": "",
+        "value": "",
+        "status": "unknown",
+        "evidence": []
+      }
+    ]
+  },
+  "variants": [
+    {
+      "id": "var_01",
+      "type": "color",
+      "label": "",
+      "evidence": ["img_01"],
+      "maps_to_all_skus": false
+    }
+  ],
+  "images": [
+    {
+      "id": "img_01",
+      "type": "hero",
+      "url": "",
+      "local_path": "",
+      "description": "",
+      "facts": [],
+      "role": "product_reference"
+    }
+  ],
+  "claims": {
+    "confirmed": [],
+    "excluded": ["waterproof", "load_rating", "certification", "medical"]
+  },
+  "unknowns": [
+    {
+      "field": "material",
+      "reason": "图中未见材质标注",
+      "blocks": ["spec"]
+    }
+  ]
+}
