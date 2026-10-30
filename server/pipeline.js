@@ -1,5 +1,8 @@
 import { extractSourceId, parseLinks, sourceFromUrl } from "./catalog.js";
 import { claimTiktokToShop, claimToPlatform, fetchItem, getCachedShopList, getCommonCollectBoxList, getCommonDetail, getTiktokShopDetail, getTiktokSiteDetail, mapCommonRow, mapTiktokCollectItems, peekShopListCache, pickCommonCollectBoxDetailId, pickSourceDetailMap, resolveDetailIdFromMap, resolveSettings, saveTiktokShopDetail, saveTiktokSiteDetail, searchTiktokCollectList } from "./miaoshou.js";
+import { hasOpenAIConfig, optimizeTitleWithApi } from "./openai-api.js";
+import { runOpenAIDetailFlow } from "./detail-flow.js";
+import { runProductImageFlow } from "./product-image-flow.js";
 import { applyOptimizedTitle, generateDetailHeaderFromImages, generateMainImagesWithCodex, generateSkuImagesWithCodex, generateTkshopImagesWithCodex, optimizeTitleWithCodex, pickOriginalTitle } from "./codex-title.js";
 import { applyDefaultWeight, applyDetailHeader, applyImgUrls, applyPackageDimensions, applyPriceTemplateId, applySaveFieldDefaults, applySkuImageUrlMap, assembleNotes, collectMainImageUrls, collectSkuImageUrls, downloadDetailImages, downloadImagesByUrls, removeDir } from "./detail-images.js";
 import { ossConfigured, uploadGeneratedImages } from "./oss.js";
@@ -122,7 +125,8 @@ async function claimTiktokCollectToOneShop(settings, { tkDetailId, shop, taskId,
   return result;
 }
 
-async function fillTiktokShopAfterClaim({ settings, detailId, shops, taskId, sourceId, aiTitle, pricingId, onPhase, fetchBySite = false, site = "", waitBeforeGetMs = 0 }) {
+async function fillTiktokShopAfterClaim({ settings, detailId, shops, taskId, sourceId, aiTitle, pricingId, onPhase, fetchBySite = false, site = "", waitBeforeGetMs = 0, aiEngine = "codex" }) {
+  const useApi = aiEngine === "openai" || aiEngine === "apimart";
   const tiktokShops = (shops || []).filter((shop) => {
     if (!shop?.id) return false;
     return String(shop.platform || "tiktok").toLowerCase() === "tiktok";
@@ -185,15 +189,18 @@ async function fillTiktokShopAfterClaim({ settings, detailId, shops, taskId, sou
         const originalTitle = pickOriginalTitle(shopCollectItemInfo);
         if (originalTitle) {
           try {
-            if (taskId) appendLog(taskId, "info", `调用 Codex 优化标题 · ${shop.site || "TH"}`, originalTitle);
-            const optimized = await optimizeTitleWithCodex(originalTitle, shop.site || "TH");
+            if (taskId) appendLog(taskId, "info", `${useApi ? "调用 OpenAI pipeline.title 优化标题" : "调用 Codex 优化标题"} · ${shop.site || "TH"}`, originalTitle);
+            const optimized = useApi
+              ? await optimizeTitleWithApi(originalTitle, shop.site || "TH")
+              : await optimizeTitleWithCodex(originalTitle, shop.site || "TH");
             shopCollectItemInfo = applyOptimizedTitle(shopCollectItemInfo, optimized);
             if (taskId) appendLog(taskId, "info", `标题已优化：${originalTitle} → ${optimized}`);
           } catch (error) {
-            if (taskId) appendLog(taskId, "warn", `标题优化失败，仍保存原标题：${error.message}`, error.detail || "");
+            if (taskId) appendLog(taskId, "error", `标题优化失败，已终止：${error.message}`, error.detail || "");
+            throw error;
           }
         } else if (taskId) {
-          appendLog(taskId, "warn", `详情里没有标题字段，跳过 Codex 优化 · ${shop.name}`);
+          appendLog(taskId, "warn", `详情里没有标题字段，跳过标题优化 · ${shop.name}`);
         }
       }
       onPhase?.(2);
@@ -205,40 +212,69 @@ async function fillTiktokShopAfterClaim({ settings, detailId, shops, taskId, sou
         if (taskId) appendLog(taskId, "info", `详情图已下载 ${downloaded.files.length}/${downloaded.urls.length} 张到 ${downloaded.dir}`);
         if (downloaded.files.length) {
           const originalNotes = shopCollectItemInfo.notes || "";
-          if (taskId) appendLog(taskId, "info", `调用 Codex 生成详情头部文案 · ${downloaded.dir}`);
-          const headerText = await generateDetailHeaderFromImages(downloaded.dir);
-          shopCollectItemInfo = applyDetailHeader(shopCollectItemInfo, assembleNotes(headerText, originalNotes, []));
-          if (taskId) appendLog(taskId, "info", "详情头部文案已生成", headerText.slice(0, 400));
-          try {
-            generatedDir = fs.mkdtempSync(path.join(os.tmpdir(), "miaoshou-tkshop-"));
-            if (taskId) appendLog(taskId, "info", `调用 Codex $1688-to-tkshop-images 生成泰国站泰语详情图 · 原图 ${downloaded.dir}`);
-            const generated = await generateTkshopImagesWithCodex(downloaded.dir, {
+          if (useApi) {
+            if (taskId) appendLog(taskId, "info", `详情：extract-plan → detail → generate · 原图 ${downloaded.files.length} 张`);
+            const flow = await runOpenAIDetailFlow({
+              files: downloaded.files,
+              urls: downloaded.urls,
               site: shop.site || "TH",
-              outputDir: generatedDir,
+              productId: String(detailId),
+              onLog: (message, extra) => appendLog(taskId, "info", message, extra),
             });
-            if (taskId) appendLog(taskId, "info", `新详情图已生成 ${generated.files.length} 张到 ${generated.dir}`, generated.log.slice(0, 400));
+            const headerText = flow.listingCopy;
+            shopCollectItemInfo = applyDetailHeader(shopCollectItemInfo, assembleNotes(headerText, originalNotes, []));
+            if (taskId) appendLog(taskId, "info", `详情套图已生成 ${flow.files.length} 张`);
+            generatedDir = flow.dir;
             if (!ossConfigured()) {
               if (taskId) appendLog(taskId, "warn", "未配置 OSS，本次不替换详情图地址");
             } else {
               if (taskId) appendLog(taskId, "info", "开始上传详情图到阿里云 OSS");
-              const imageUrls = await uploadGeneratedImages(generated.files, { detailId, shopId: shop.id });
+              const imageUrls = await uploadGeneratedImages(flow.files, { detailId, shopId: shop.id });
               if (taskId) {
                 for (const url of imageUrls) appendLog(taskId, "info", `OSS 图片 ${url}`);
               }
               shopCollectItemInfo = applyDetailHeader(shopCollectItemInfo, assembleNotes(headerText, originalNotes, imageUrls));
             }
-          } catch (error) {
-            if (taskId) appendLog(taskId, "warn", `详情图生成失败，文案仍保留：${error.message}`, error.detail || "");
+          } else {
+            if (taskId) appendLog(taskId, "info", `调用 Codex 生成详情头部文案 · ${downloaded.dir}`);
+            const headerText = await generateDetailHeaderFromImages(downloaded.dir);
+            shopCollectItemInfo = applyDetailHeader(shopCollectItemInfo, assembleNotes(headerText, originalNotes, []));
+            if (taskId) appendLog(taskId, "info", "详情头部文案已生成", headerText.slice(0, 400));
+            try {
+              generatedDir = fs.mkdtempSync(path.join(os.tmpdir(), "miaoshou-tkshop-"));
+              if (taskId) appendLog(taskId, "info", `调用 Codex $1688-to-tkshop-images 生成泰国站泰语详情图 · 原图 ${downloaded.dir}`);
+              const generated = await generateTkshopImagesWithCodex(downloaded.dir, {
+                site: shop.site || "TH",
+                outputDir: generatedDir,
+              });
+              if (taskId) appendLog(taskId, "info", `新详情图已生成 ${generated.files.length} 张到 ${generated.dir}`, generated.log.slice(0, 400));
+              if (!ossConfigured()) {
+                if (taskId) appendLog(taskId, "warn", "未配置 OSS，本次不替换详情图地址");
+              } else {
+                if (taskId) appendLog(taskId, "info", "开始上传详情图到阿里云 OSS");
+                const imageUrls = await uploadGeneratedImages(generated.files, { detailId, shopId: shop.id });
+                if (taskId) {
+                  for (const url of imageUrls) appendLog(taskId, "info", `OSS 图片 ${url}`);
+                }
+                shopCollectItemInfo = applyDetailHeader(shopCollectItemInfo, assembleNotes(headerText, originalNotes, imageUrls));
+              }
+            } catch (error) {
+              if (taskId) appendLog(taskId, "error", `详情图生成失败，已终止：${error.message}`, error.detail || "");
+              throw error;
+            }
           }
         } else if (taskId) {
           appendLog(taskId, "warn", `没有可用详情图，跳过详情文案 · ${shop.name}`);
         }
       } catch (error) {
-        if (taskId) appendLog(taskId, "warn", `详情文案生成失败，仍保存当前内容：${error.message}`, error.detail || "");
+        if (taskId) appendLog(taskId, "error", `详情文案生成失败，已终止：${error.message}`, error.detail || "");
+        throw error;
       } finally {
         removeDir(imageDir);
+        removeDir(generatedDir);
       }
       let mainDir = "";
+      let mainGeneratedDir = "";
       try {
         const mainUrls = collectMainImageUrls(shopCollectItemInfo);
         if (!mainUrls.length) {
@@ -250,13 +286,26 @@ async function fillTiktokShopAfterClaim({ settings, detailId, shops, taskId, sou
           if (!downloadedMain.files.length) {
             if (taskId) appendLog(taskId, "warn", "商品图下载失败，跳过转化");
           } else {
-            const mainOutDir = fs.mkdtempSync(path.join(os.tmpdir(), "miaoshou-main-th-"));
-            if (taskId) appendLog(taskId, "info", `调用 Codex $ecommerce-main-image-batch 生成 TikTok Shop 泰国泰语商品图 · ${downloadedMain.dir}`);
-            const generatedMain = await generateMainImagesWithCodex(downloadedMain.dir, {
-              site: shop.site || "TH",
-              outputDir: mainOutDir,
-            });
-            if (taskId) appendLog(taskId, "info", `商品新图已生成 ${generatedMain.files.length} 张到 ${generatedMain.dir}`, generatedMain.log.slice(0, 400));
+            let generatedMain;
+            if (useApi) {
+              if (taskId) appendLog(taskId, "info", `主图：analyze → image2 · ${downloadedMain.files.length} 张（第一张白底无字）`);
+              generatedMain = await runProductImageFlow({
+                files: downloadedMain.files,
+                urls: downloadedMain.urls,
+                site: shop.site || "TH",
+                imageKind: "main",
+                onLog: (message, extra) => appendLog(taskId, "info", message, extra),
+              });
+            } else {
+              const mainOutDir = fs.mkdtempSync(path.join(os.tmpdir(), "miaoshou-main-th-"));
+              if (taskId) appendLog(taskId, "info", `调用 Codex $ecommerce-main-image-batch 生成 TikTok Shop 泰国泰语商品图 · ${downloadedMain.dir}`);
+              generatedMain = await generateMainImagesWithCodex(downloadedMain.dir, {
+                site: shop.site || "TH",
+                outputDir: mainOutDir,
+              });
+            }
+            mainGeneratedDir = generatedMain.dir;
+            if (taskId) appendLog(taskId, "info", `商品新图已生成 ${generatedMain.files.length} 张到 ${generatedMain.dir}`, generatedMain.log?.slice(0, 400));
             if (!ossConfigured()) {
               if (taskId) appendLog(taskId, "warn", "未配置 OSS，本次不替换 imgUrls");
             } else {
@@ -270,11 +319,14 @@ async function fillTiktokShopAfterClaim({ settings, detailId, shops, taskId, sou
           }
         }
       } catch (error) {
-        if (taskId) appendLog(taskId, "warn", `商品图转化失败：${error.message}`, error.detail || "");
+        if (taskId) appendLog(taskId, "error", `商品图转化失败，已终止：${error.message}`, error.detail || "");
+        throw error;
       } finally {
         removeDir(mainDir);
+        removeDir(mainGeneratedDir);
       }
       let skuDir = "";
+      let skuGeneratedDir = "";
       try {
         const skuUrls = collectSkuImageUrls(shopCollectItemInfo);
         if (!skuUrls.length) {
@@ -286,13 +338,26 @@ async function fillTiktokShopAfterClaim({ settings, detailId, shops, taskId, sou
           if (!downloadedSku.files.length) {
             if (taskId) appendLog(taskId, "warn", "SKU 图下载失败，跳过转化");
           } else {
-            const skuOutDir = fs.mkdtempSync(path.join(os.tmpdir(), "miaoshou-sku-th-"));
-            if (taskId) appendLog(taskId, "info", `调用 Codex $ecommerce-main-image-batch 生成 TikTok Shop 泰国泰语 SKU 图 · ${downloadedSku.dir}`);
-            const generatedSku = await generateSkuImagesWithCodex(downloadedSku.dir, {
-              site: shop.site || "TH",
-              outputDir: skuOutDir,
-            });
-            if (taskId) appendLog(taskId, "info", `SKU 新图已生成 ${generatedSku.files.length} 张到 ${generatedSku.dir}`, generatedSku.log.slice(0, 400));
+            let generatedSku;
+            if (useApi) {
+              if (taskId) appendLog(taskId, "info", `SKU：analyze → image2 · ${downloadedSku.files.length} 张`);
+              generatedSku = await runProductImageFlow({
+                files: downloadedSku.files,
+                urls: downloadedSku.urls,
+                site: shop.site || "TH",
+                imageKind: "sku",
+                onLog: (message, extra) => appendLog(taskId, "info", message, extra),
+              });
+            } else {
+              const skuOutDir = fs.mkdtempSync(path.join(os.tmpdir(), "miaoshou-sku-th-"));
+              if (taskId) appendLog(taskId, "info", `调用 Codex $ecommerce-main-image-batch 生成 TikTok Shop 泰国泰语 SKU 图 · ${downloadedSku.dir}`);
+              generatedSku = await generateSkuImagesWithCodex(downloadedSku.dir, {
+                site: shop.site || "TH",
+                outputDir: skuOutDir,
+              });
+            }
+            skuGeneratedDir = generatedSku.dir;
+            if (taskId) appendLog(taskId, "info", `SKU 新图已生成 ${generatedSku.files.length} 张到 ${generatedSku.dir}`, generatedSku.log?.slice(0, 400));
             if (!ossConfigured()) {
               if (taskId) appendLog(taskId, "warn", "未配置 OSS，本次不替换 SKU 图地址");
             } else {
@@ -309,9 +374,11 @@ async function fillTiktokShopAfterClaim({ settings, detailId, shops, taskId, sou
           }
         }
       } catch (error) {
-        if (taskId) appendLog(taskId, "warn", `SKU 图转化失败：${error.message}`, error.detail || "");
+        if (taskId) appendLog(taskId, "error", `SKU 图转化失败，已终止：${error.message}`, error.detail || "");
+        throw error;
       } finally {
         removeDir(skuDir);
+        removeDir(skuGeneratedDir);
       }
       onPhase?.(3);
       shopCollectItemInfo = applyPackageDimensions(shopCollectItemInfo);
@@ -363,7 +430,7 @@ async function fillTiktokShopAfterClaim({ settings, detailId, shops, taskId, sou
       }
     } catch (error) {
       if (taskId) appendLog(taskId, "error", `店铺采集信息处理失败 ${shop.name}：${error.message}`, error.detail || "");
-      else throw error;
+      throw error;
     }
   }
 }
@@ -598,18 +665,20 @@ export function createTask({ linksText, shopIds, shops: shopList = [], templateI
   return created;
 }
 
-export function createOptimizeTask(ids = []) {
+export function createOptimizeTask(ids = [], { engine = "codex" } = {}) {
   const itemIds = [...new Set((ids || []).map((id) => String(id || "")).filter(Boolean))];
   if (!itemIds.length) throw new Error("请选择要优化的商品");
   let created;
   writeStore((store) => {
     const items = store.tiktok.filter((item) => itemIds.includes(String(item.id)));
+    const api = engine === "openai" || engine === "apimart";
     created = {
       id: uid("task"),
       kind: "optimize",
-      title: `AI 优化 · ${items.length || itemIds.length} 个商品`,
+      engine: api ? "openai" : "codex",
+      title: `${api ? "AI 优化(OpenAI)" : "AI 优化"} · ${items.length || itemIds.length} 个商品`,
       emoji: "⌁",
-      meta: "从获取详情开始",
+      meta: api ? "OpenAI 标题 + 详情图" : "从获取详情开始",
       status: "queued",
       progress: 0,
       ok: 0,
@@ -639,7 +708,12 @@ export async function runOptimizeTask(taskId) {
     patchTask(taskId, { status: "failed", progress: 100, error: "未接妙手接口", durationMs: Date.now() - started });
     return;
   }
-  appendLog(taskId, "info", `AI 优化开始 · ${task.itemIds.length} 个商品`);
+  appendLog(taskId, "info", `AI 优化开始 · ${task.itemIds.length} 个商品${task.engine === "openai" || task.engine === "apimart" ? " · OpenAI" : ""}`);
+  if ((task.engine === "openai" || task.engine === "apimart") && !hasOpenAIConfig()) {
+    appendLog(taskId, "error", "未配置 OPENAI_API_KEY，已跳过优化");
+    patchTask(taskId, { status: "failed", progress: 100, error: "未配置 OPENAI_API_KEY", durationMs: Date.now() - started });
+    return;
+  }
   setTaskSteps(taskId, OPTIMIZE_STEP_LABELS, 0);
   let cachedShops = peekShopListCache("tiktok", "") || [];
   if (!cachedShops.length) {
@@ -683,6 +757,7 @@ export async function runOptimizeTask(taskId) {
         taskId,
         sourceId: item.sourceId,
         aiTitle: task.aiTitle !== false,
+        aiEngine: task.engine === "codex" ? "codex" : "openai",
         fetchBySite,
         site,
         onPhase: (phase) => setTaskSteps(taskId, OPTIMIZE_STEP_LABELS, phase),

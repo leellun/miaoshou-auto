@@ -1,8 +1,9 @@
 node_modules
 dist
 .env
+data
 data/store.json
 data/*.bak
+data/openai-logs/
 web/dist
 .DS_Store
-data

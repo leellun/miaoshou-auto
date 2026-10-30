@@ -77,14 +77,12 @@ export function emptyPlanPage(page = 1) {
     title: "",
     buyer_question: "",
     reference_images: [],
-    reference_roles: {},
     copy: {
       headline: "",
-      support: "",
       labels: [],
     },
-    invariants: [],
-    excluded_claims: [],
+    prompt: "",
+    size: "3:4",
     generate: true,
   };
 }
@@ -174,10 +172,9 @@ export function exampleDetailPlan() {
       title: "核心产品展示",
       buyer_question: "这是什么、长什么样",
       reference_images: ["img_01"],
-      reference_roles: { img_01: "product_reference" },
-      copy: { headline: "", support: "", labels: [] },
-      invariants: ["外形", "颜色", "可见结构"],
-      excluded_claims: [],
+      copy: { headline: "", labels: [] },
+      prompt: "",
+      size: "3:4",
       generate: true,
     },
     {
@@ -186,13 +183,9 @@ export function exampleDetailPlan() {
       title: "尺寸规格",
       buyer_question: "尺寸是否合适",
       reference_images: ["img_03", "img_04"],
-      reference_roles: {
-        img_03: "factual_evidence",
-        img_04: "detail_reference",
-      },
-      copy: { headline: "", support: "", labels: [] },
-      invariants: ["只写 evidence 中的数字和单位"],
-      excluded_claims: ["waterproof", "load_rating"],
+      copy: { headline: "", labels: [] },
+      prompt: "",
+      size: "3:4",
       generate: true,
     },
   ];

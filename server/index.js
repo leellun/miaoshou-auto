@@ -24,6 +24,7 @@ function publicSettings(settings) {
     hasSecret: Boolean(resolved.appSecret),
     minMargin: settings.minMargin,
     skipOnError: settings.skipOnError,
+    openaiProxy: settings.openaiProxy || "",
     lastSyncAt: settings.lastSyncAt,
     apiStatus: resolved.mode === "live" ? settings.apiStatus : "",
     lastError: settings.lastError || "",
@@ -359,6 +360,26 @@ app.post("/api/tiktok/optimize", (req, res) => {
   }
 });
 
+app.post("/api/tiktok-pro/optimize", (req, res) => {
+  try {
+    const task = createOptimizeTask(req.body.ids || [], { engine: "openai" });
+    setTimeout(() => runOptimizeTask(task.id).catch((error) => {
+      appendLog(task.id, "error", `任务异常退出：${error.message}`, error.detail || "");
+      writeStore((store) => {
+        const current = store.tasks.find((t) => t.id === task.id);
+        if (current) {
+          current.status = "failed";
+          current.error = error.message;
+        }
+        return store;
+      });
+    }), 30);
+    res.json(task);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.post("/api/tiktok/publish", (req, res) => {
   const published = publishProducts(req.body.ids || []);
   res.json({ ok: true, published });
@@ -426,6 +447,7 @@ app.post("/api/settings", (req, res) => {
   writeStore((store) => {
     const next = { ...store.settings, ...req.body };
     if (!req.body.appSecret) next.appSecret = store.settings.appSecret;
+    if ("openaiProxy" in req.body) next.openaiProxy = String(req.body.openaiProxy || "").trim();
     store.settings = next;
     return store;
   });

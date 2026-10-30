@@ -30,6 +30,7 @@ const seed = {
     signStyle: "header",
     minMargin: 15,
     skipOnError: true,
+    openaiProxy: "",
     lastSyncAt: "",
     apiStatus: "",
   },

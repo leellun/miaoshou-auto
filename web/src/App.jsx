@@ -7,6 +7,7 @@ const NAV = [
     { id: "collect", title: "产品采集", icon: "＋" },
     { id: "common", title: "公共采集箱", icon: "▣" },
     { id: "tiktok", title: "TK采集箱", icon: "⌁" },
+    { id: "tiktok-pro", title: "TK采集箱Pro", icon: "⚡" },
   ]},
   { group: "配置", items: [
     { id: "pricing", title: "定价模板", icon: "￥" },
@@ -87,6 +88,12 @@ export default function App() {
   const [commonBusy, setCommonBusy] = useState(false);
   const [tkSelected, setTkSelected] = useState([]);
   const [tkBusy, setTkBusy] = useState(false);
+  const [tiktokPro, setTiktokPro] = useState({ items: [], counts: {} });
+  const [tkProTab, setTkProTab] = useState("unpublished");
+  const [tkProQ, setTkProQ] = useState("");
+  const [tkProSite, setTkProSite] = useState("TH");
+  const [tkProSelected, setTkProSelected] = useState([]);
+  const [tkProBusy, setTkProBusy] = useState(false);
   const [claimPendingIds, setClaimPendingIds] = useState(null);
   const [deletePendingIds, setDeletePendingIds] = useState(null);
   const [deletePendingBox, setDeletePendingBox] = useState("common");
@@ -176,6 +183,12 @@ export default function App() {
     const visible = new Set((data.items || []).map((x) => x.id));
     setTkSelected((prev) => prev.filter((id) => visible.has(id)));
   }
+  async function loadTiktokPro() {
+    const data = await api(`/api/tiktok?tab=${tkProTab}&site=${tkProSite}&q=${encodeURIComponent(tkProQ)}`);
+    setTiktokPro(data);
+    const visible = new Set((data.items || []).map((x) => x.id));
+    setTkProSelected((prev) => prev.filter((id) => visible.has(id)));
+  }
 
   const commonIds = common.items.map((x) => x.id);
   const commonAllChecked = commonIds.length > 0 && commonIds.every((id) => commonSelected.includes(id));
@@ -216,6 +229,17 @@ export default function App() {
     setTkSelected(checked ? tiktok.items.map((x) => x.id) : []);
   }
 
+  const tkProIds = tiktokPro.items.map((x) => x.id);
+  const tkProAllChecked = tkProIds.length > 0 && tkProIds.every((id) => tkProSelected.includes(id));
+
+  function toggleTkProSelected(id, checked) {
+    setTkProSelected((prev) => (checked ? [...new Set([...prev, id])] : prev.filter((x) => x !== id)));
+  }
+
+  function toggleAllTkPro(checked) {
+    setTkProSelected(checked ? tiktokPro.items.map((x) => x.id) : []);
+  }
+
   async function deleteTiktokItems(ids) {
     const list = [...new Set(ids)].filter(Boolean);
     if (!list.length) {
@@ -230,6 +254,23 @@ export default function App() {
       notify(`已删除 ${list.length} 个商品`);
     } finally {
       setTkBusy(false);
+    }
+  }
+
+  async function deleteTiktokProItems(ids) {
+    const list = [...new Set(ids)].filter(Boolean);
+    if (!list.length) {
+      notify("请先勾选要删除的商品");
+      return;
+    }
+    setTkProBusy(true);
+    try {
+      await api("/api/tiktok/delete", { method: "POST", body: { ids: list } });
+      setTkProSelected((prev) => prev.filter((id) => !list.includes(id)));
+      await loadTiktokPro();
+      notify(`已删除 ${list.length} 个商品`);
+    } finally {
+      setTkProBusy(false);
     }
   }
 
@@ -249,6 +290,7 @@ export default function App() {
     setDeletePendingIds(null);
     if (!list.length) return;
     if (box === "tiktok") await deleteTiktokItems(list);
+    else if (box === "tiktok-pro") await deleteTiktokProItems(list);
     else await deleteCommonItems(list);
   }
 
@@ -315,6 +357,8 @@ export default function App() {
   useEffect(() => { setCommonSelected([]); }, [commonTab]);
   useEffect(() => { if (view === "tiktok") loadTiktok(); }, [view, tkTab, tkQ, tkSite]);
   useEffect(() => { setTkSelected([]); }, [tkTab]);
+  useEffect(() => { if (view === "tiktok-pro") loadTiktokPro(); }, [view, tkProTab, tkProQ, tkProSite]);
+  useEffect(() => { setTkProSelected([]); }, [tkProTab]);
   useEffect(() => {
     setSelectedShopMap((prev) => {
       const next = { ...prev };
@@ -396,6 +440,7 @@ export default function App() {
           await refreshAll();
           await loadCommon();
           await loadTiktok();
+          if (view === "tiktok-pro") await loadTiktokPro();
         }
       } catch (error) {
         fails += 1;
@@ -440,6 +485,12 @@ export default function App() {
 
   async function startOptimize(ids) {
     const task = await api("/api/tiktok/optimize", { method: "POST", body: { ids } });
+    setActiveTask(task);
+    setDrawer(true);
+  }
+
+  async function startOptimizePro(ids) {
+    const task = await api("/api/tiktok-pro/optimize", { method: "POST", body: { ids } });
     setActiveTask(task);
     setDrawer(true);
   }
@@ -523,6 +574,7 @@ export default function App() {
         return;
       }
       setTkBusy(true);
+      if (view === "tiktok-pro") setTkProBusy(true);
       api("/api/tiktok/assign-shop", {
         method: "POST",
         body: {
@@ -531,9 +583,13 @@ export default function App() {
           shops: tiktokShops,
         },
       }).then(() => {
-        loadTiktok();
+        if (view === "tiktok-pro") loadTiktokPro();
+        else loadTiktok();
         notify(`已认领到 ${tiktokShops.length} 个店铺`);
-      }).catch((e) => notify(e.message)).finally(() => setTkBusy(false));
+      }).catch((e) => notify(e.message)).finally(() => {
+        setTkBusy(false);
+        setTkProBusy(false);
+      });
     }
   }
 
@@ -847,6 +903,78 @@ export default function App() {
           </div>
         )}
 
+        {view === "tiktok-pro" && (
+          <div className="content">
+            <div className="heading"><div><h1>TK采集箱Pro</h1><p>已转换成TikTok平台结构的商品，在这里完成类目、属性、店铺选择和发布。</p></div></div>
+            <div className="toolbar">
+              <button
+                className="btn"
+                disabled={!tkProSelected.length || tkProBusy}
+                onClick={() => startAssignShops(tkProSelected)}
+              >选择店铺{tkProSelected.length ? ` (${tkProSelected.length})` : ""}</button>
+              <button
+                className="btn"
+                disabled={!tkProSelected.length || tkProBusy}
+                onClick={() => startOptimizePro(tkProSelected).catch((e) => notify(e.message))}
+              >批量AI优化{tkProSelected.length ? ` (${tkProSelected.length})` : ""}</button>
+              <button
+                className="btn green"
+                disabled={!tkProSelected.length || tkProBusy}
+                onClick={async () => {
+                  const r = await api("/api/tiktok/publish", { method: "POST", body: { ids: tkProSelected } });
+                  loadTiktokPro();
+                  notify(`已发布 ${r.published} 个商品`);
+                }}
+              >批量发布{tkProSelected.length ? ` (${tkProSelected.length})` : ""}</button>
+              <button
+                className="btn"
+                disabled={!tkProSelected.length || tkProBusy}
+                onClick={() => askDelete(tkProSelected, "tiktok-pro")}
+              >批量删除{tkProSelected.length ? ` (${tkProSelected.length})` : ""}</button>
+            </div>
+            <div className="filterbar">
+              <div className="filtertabs">
+                {[["all","全部"],["unpublished","未发布"],["scheduled","定时发布"],["published","已发布"],["ai","AI优化中"]].map(([id, label]) => (
+                  <button key={id} className={tkProTab === id ? "active" : ""} onClick={() => setTkProTab(id)}>{label}{tkProTab === id ? ` ${tiktokPro.counts[id] || 0}` : ""}</button>
+                ))}
+              </div>
+              <div className="search">
+                <select className="btn" value={tkProSite} onChange={(e) => setTkProSite(e.target.value)}><option value="TH">TikTok TH</option><option value="MY">TikTok MY</option><option value="PH">TikTok PH</option></select>
+                <input value={tkProQ} onChange={(e) => setTkProQ(e.target.value)} placeholder="货源ID（sourceItemIdKeyword）" /><button className="btn" onClick={loadTiktokPro}>查询</button>
+              </div>
+            </div>
+            <div className="card table-card">
+              <table className="data-table">
+                <thead><tr>
+                  <th className="check-col"><input type="checkbox" checked={tkProAllChecked} disabled={!tiktokPro.items.length} onChange={(e) => toggleAllTkPro(e.target.checked)} aria-label="全选" /></th>
+                  <th>商品信息</th><th>预发布类目</th><th>税前售价</th><th>库存</th><th>发布店铺</th><th>重量</th><th>校验状态</th><th>操作</th>
+                </tr></thead>
+                <tbody>
+                  {tiktokPro.items.map((item) => (
+                    <tr key={item.id} className={tkProSelected.includes(item.id) ? "is-selected" : ""}>
+                      <td className="check-col"><input type="checkbox" checked={tkProSelected.includes(item.id)} onChange={(e) => toggleTkProSelected(item.id, e.target.checked)} aria-label={`选择 ${item.title || item.id}`} /></td>
+                      <td><div className="product-cell"><Cover src={item.cover || item.thumbnail} fallback={item.emoji} /><div><b>{item.title}</b><div className="meta">货源：{item.sourceId || item.itemNum || "—"} · 采集箱 {item.collectBoxDetailId || item.detailId || item.id}</div></div></div></td>
+                      <td><span className="badge">{item.site === "TH" ? "泰/TH" : item.site}</span> {item.category}</td>
+                      <td>{item.currency} {item.priceMin}–{item.priceMax}</td>
+                      <td>{item.stock}</td>
+                      <td>{item.shopName || "未选择"}{!item.shopName && <><br /><span className="link" onClick={() => startAssignShops([item.id])} style={{ cursor: "pointer" }}>＋ 选择店铺</span></>}</td>
+                      <td>{item.weight} KG</td>
+                      <td><Status status={item.checkStatus} text={item.issues?.[0] || (item.checkStatus === "pass" ? "校验通过" : "待校验")} /></td>
+                      <td><div className="actions">
+                        <button disabled={tkProBusy} onClick={() => startOptimizePro([item.id]).catch((e) => notify(e.message))}>AI优化</button>
+                        <button onClick={() => startAssignShops([item.id])}>选择店铺</button>
+                        <button disabled={tkProBusy} onClick={async () => { const r = await api("/api/tiktok/publish", { method: "POST", body: { ids: [item.id] } }); loadTiktokPro(); notify(r.published ? "已提交发布" : "发布失败，请先选店铺"); }}>发布</button>
+                        <button disabled={tkProBusy} onClick={() => askDelete([item.id], "tiktok-pro")}>删除</button>
+                      </div></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!tiktokPro.items.length && <div className="empty-note">暂无商品</div>}
+            </div>
+          </div>
+        )}
+
         {view === "pricing" && (
           <div className="content">
             <div className="heading"><div><h1>定价模板</h1><p>使用妙手 TikTok 定价模板。模板在 ERP 里维护，这里按站点筛选后选择使用，不必做成复杂表单。</p></div></div>
@@ -917,6 +1045,9 @@ export default function App() {
                   <div className="field"><label>App Secret</label><input type="password" placeholder={settings.hasSecret ? "已保存，留空则不修改" : "仅保存在服务器"} onChange={(e) => setSettings({ ...settings, appSecret: e.target.value })} /></div>
                 </div>
                 <div className="callout">App Secret 不会返回给前端明文。网关为 https://openapi-erp.91miaoshou.com 。建议在 `.env` 配置密钥，避免写进浏览器或仓库。</div>
+                <div className="section-title" style={{ marginTop: 24 }}>OpenAI</div>
+                <div className="field"><label>HTTP 代理</label><input placeholder="http://127.0.0.1:7890" value={settings.openaiProxy || ""} onChange={(e) => setSettings({ ...settings, openaiProxy: e.target.value })} /></div>
+                <div className="callout">仅转发 OpenAI 请求。留空则使用环境变量 OPENAI_PROXY / HTTPS_PROXY。保存后立即生效，无需改 .env。</div>
                 <button className="btn primary" style={{ marginTop: 16 }} onClick={async () => { const saved = await api("/api/settings", { method: "POST", body: settings }); setSettings(saved); notify("设置已保存"); }}>保存设置</button>
               </section>
               <aside className="card form-card">
@@ -993,9 +1124,9 @@ export default function App() {
           <div className="picker-modal" style={{ width: 420 }}>
             <div className="modal-head"><b>确认删除</b><button className="btn" onClick={() => setDeletePendingIds(null)}>×</button></div>
             <div className="modal-body">
-              <p style={{ margin: "0 0 10px" }}>确定删除已选的 <b>{deletePendingIds.length}</b> 个{deletePendingBox === "tiktok" ? "TK采集箱" : "公共采集箱"}商品？删除后不可恢复。</p>
+              <p style={{ margin: "0 0 10px" }}>确定删除已选的 <b>{deletePendingIds.length}</b> 个{deletePendingBox === "tiktok-pro" ? "TK采集箱Pro" : deletePendingBox === "tiktok" ? "TK采集箱" : "公共采集箱"}商品？删除后不可恢复。</p>
               <div className="meta">
-                {(deletePendingBox === "tiktok" ? tiktok.items : common.items).filter((item) => deletePendingIds.includes(item.id)).slice(0, 4).map((item) => (
+                {(deletePendingBox === "tiktok-pro" ? tiktokPro.items : deletePendingBox === "tiktok" ? tiktok.items : common.items).filter((item) => deletePendingIds.includes(item.id)).slice(0, 4).map((item) => (
                   <div key={item.id}>{item.title || item.sourceId || item.id}</div>
                 ))}
                 {deletePendingIds.length > 4 ? <div>…还有 {deletePendingIds.length - 4} 个</div> : null}
@@ -1003,7 +1134,7 @@ export default function App() {
             </div>
             <div className="modal-foot">
               <button className="btn" onClick={() => setDeletePendingIds(null)}>取消</button>
-              <button className="btn danger" disabled={commonBusy || tkBusy} onClick={() => confirmDelete().catch((e) => notify(e.message))}>确定删除</button>
+              <button className="btn danger" disabled={commonBusy || tkBusy || tkProBusy} onClick={() => confirmDelete().catch((e) => notify(e.message))}>确定删除</button>
             </div>
           </div>
         </div>
