@@ -3,9 +3,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import cors from "cors";
 import express from "express";
-import { ENDPOINTS, applyShopsToTiktokItems, batchDeleteCommonCollectBox, batchDeleteTiktokCollectBox, claimTiktokToShop, getCachedShopList, getCommonCollectBoxList, getPriceTemplateList, mapCommonCollectItems, mapPriceTemplates, mapTiktokCollectItems, peekShopListCache, resolveSettings, searchTiktokCollectList } from "./miaoshou.js";
+import { ENDPOINTS, applyShopsToTiktokItems, batchDeleteCommonCollectBox, batchDeleteTiktokCollectBox, claimTiktokToShop, getCachedPriceTemplateList, getCachedShopList, getCommonCollectBoxList, mapCommonCollectItems, mapTiktokCollectItems, peekPriceTemplateCache, peekShopListCache, resolveSettings, searchTiktokCollectList } from "./miaoshou.js";
+import { calcPriceByTemplate, compactPriceFields, mergePriceTemplate, pickValuedPriceFields } from "./tiktok-th-price.js";
+import { DEFAULT_FX_RATES, FX_ROWS, normalizeFxRates } from "./fx-rates.js";
+import { FREIGHT_ROWS, normalizeFreightTable } from "./freight-table.js";
 import { appendLog, createClaimTask, createOptimizeTask, createTask, failInterruptedTasks, publishProducts, runClaimTask, runOptimizeTask, runTask } from "./pipeline.js";
 import { now, readStore, resetStore, writeStore } from "./store.js";
+import { failTask, getTask, readTasks } from "./tasks.js";
+import { withTaskLogs } from "./task-log.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -44,7 +49,7 @@ app.get("/api/overview", (_req, res) => {
   const store = readStore();
   res.json({
     stats: store.statsToday,
-    tasks: store.tasks.slice(0, 8),
+    tasks: readTasks().slice(0, 8),
     exceptions: store.exceptions.slice(0, 8),
     settings: publicSettings(store.settings),
     defaultTemplate: store.templates.find((t) => t.enabled) || store.templates[0],
@@ -61,6 +66,23 @@ function filterShops(items, { platform, site, q = "" }) {
   });
 }
 
+function shopListSite(platform, site) {
+  return String(platform || "").toLowerCase() === "tiktok" ? "" : (site || "");
+}
+
+function persistFetchedShops(platform, mapped) {
+  writeStore((s) => {
+    if (mapped.length) {
+      const rest = platform ? s.shops.filter((x) => String(x.platform) !== String(platform)) : [];
+      s.shops = [...mapped, ...rest];
+    }
+    s.settings.apiStatus = "ok";
+    s.settings.lastSyncAt = now();
+    s.settings.lastError = "";
+    return s;
+  });
+}
+
 app.get("/api/shops", async (req, res) => {
   const { platform = "", site = "", q = "" } = req.query;
   const store = readStore();
@@ -70,18 +92,9 @@ app.get("/api/shops", async (req, res) => {
       return res.json({ items: filterShops(store.shops, { platform, site, q }), endpoint: ENDPOINTS.shopList, live: false });
     }
     try {
-      const mapped = await getCachedShopList(settings, { platform, site: platform.toLowerCase() === "tiktok" ? "" : site });
-      writeStore((s) => {
-        if (mapped.length) {
-          const rest = platform ? s.shops.filter((x) => x.platform !== platform) : [];
-          s.shops = [...mapped, ...rest];
-        }
-        s.settings.apiStatus = "ok";
-        s.settings.lastSyncAt = now();
-        s.settings.lastError = "";
-        return s;
-      });
-      return res.json({ items: filterShops(mapped.length ? mapped : readStore().shops, { platform, site, q }), endpoint: ENDPOINTS.shopList, live: true });
+      const mapped = await getCachedShopList(settings, { platform, site: shopListSite(platform, site) });
+      persistFetchedShops(platform, mapped);
+      return res.json({ items: filterShops(readStore().shops, { platform, site, q }), endpoint: ENDPOINTS.shopList, live: true });
     } catch (error) {
       writeStore((s) => {
         s.settings.apiStatus = "error";
@@ -99,20 +112,16 @@ app.get("/api/shops", async (req, res) => {
 });
 
 app.post("/api/shops/sync", async (req, res) => {
+  const platform = req.body?.platform || "tiktok";
+  const site = req.body?.site || "";
   const store = readStore();
   const settings = resolveSettings(store.settings);
   if (settings.mode === "live") {
     try {
-      const mapped = await getCachedShopList(settings, { platform: req.body?.platform || "tiktok", site: req.body?.site || "", force: true });
-      writeStore((s) => {
-        if (mapped.length) s.shops = mapped;
-        s.settings.apiStatus = "ok";
-        s.settings.lastSyncAt = now();
-        s.settings.lastError = "";
-        return s;
-      });
+      const mapped = await getCachedShopList(settings, { platform, site: shopListSite(platform, site), force: true });
+      persistFetchedShops(platform, mapped);
     } catch (error) {
-      return res.status(502).json({ error: error.message, detail: error.detail || null });
+      return res.status(502).json({ error: error.message, detail: error.detail || null, endpoint: ENDPOINTS.shopList });
     }
   } else {
     writeStore((s) => {
@@ -121,7 +130,21 @@ app.post("/api/shops/sync", async (req, res) => {
       return s;
     });
   }
-  res.json({ items: readStore().shops });
+  res.json({ items: readStore().shops, endpoint: ENDPOINTS.shopList });
+});
+
+app.put("/api/shops/:id/pricing", (req, res) => {
+  const id = String(req.params.id);
+  const pricingId = String(req.body?.pricingId || "").trim();
+  writeStore((store) => {
+    store.shopLocals = store.shopLocals || {};
+    if (!pricingId) delete store.shopLocals[id];
+    else store.shopLocals[id] = { ...(store.shopLocals[id] || {}), pricingId };
+    return store;
+  });
+  const shop = readStore().shops.find((item) => String(item.id) === id);
+  if (!shop) return res.status(404).json({ error: "店铺不存在" });
+  res.json({ ok: true, item: shop });
 });
 
 app.get("/api/common", async (req, res) => {
@@ -193,18 +216,11 @@ app.post("/api/common/delete", async (req, res) => {
 
 app.post("/api/common/claim", (req, res) => {
   try {
-    const { ids = [], shopIds = [], shops = [], pricingId, autoPublish, aiTitle, schedule } = req.body;
-    const task = createClaimTask({ ids, shopIds, shops, pricingId, autoPublish, aiTitle, schedule });
+    const { ids = [], shopIds = [], shops = [], autoPublish, aiTitle, schedule } = req.body;
+    const task = createClaimTask({ ids, shopIds, shops, autoPublish, aiTitle, schedule });
     setTimeout(() => runClaimTask(task.id).catch((error) => {
       appendLog(task.id, "error", `任务异常退出：${error.message}`, error.detail || "");
-      writeStore((store) => {
-        const current = store.tasks.find((t) => t.id === task.id);
-        if (current) {
-          current.status = "failed";
-          current.error = error.message;
-        }
-        return store;
-      });
+      failTask(task.id, error);
     }), 30);
     res.json(task);
   } catch (error) {
@@ -345,14 +361,7 @@ app.post("/api/tiktok/optimize", (req, res) => {
     const task = createOptimizeTask(req.body.ids || []);
     setTimeout(() => runOptimizeTask(task.id).catch((error) => {
       appendLog(task.id, "error", `任务异常退出：${error.message}`, error.detail || "");
-      writeStore((store) => {
-        const current = store.tasks.find((t) => t.id === task.id);
-        if (current) {
-          current.status = "failed";
-          current.error = error.message;
-        }
-        return store;
-      });
+      failTask(task.id, error);
     }), 30);
     res.json(task);
   } catch (error) {
@@ -362,17 +371,10 @@ app.post("/api/tiktok/optimize", (req, res) => {
 
 app.post("/api/tiktok-pro/optimize", (req, res) => {
   try {
-    const task = createOptimizeTask(req.body.ids || [], { engine: "openai" });
+    const task = createOptimizeTask(req.body.ids || []);
     setTimeout(() => runOptimizeTask(task.id).catch((error) => {
       appendLog(task.id, "error", `任务异常退出：${error.message}`, error.detail || "");
-      writeStore((store) => {
-        const current = store.tasks.find((t) => t.id === task.id);
-        if (current) {
-          current.status = "failed";
-          current.error = error.message;
-        }
-        return store;
-      });
+      failTask(task.id, error);
     }), 30);
     res.json(task);
   } catch (error) {
@@ -395,31 +397,46 @@ app.post("/api/templates", (req, res) => {
   res.json({ ok: true, items: readStore().templates });
 });
 
-const priceTemplateCache = new Map();
+function withLocalPrice(items) {
+  const locals = readStore().priceTemplateLocals || {};
+  return (items || []).map((item) => compactPriceFields(mergePriceTemplate(item, locals[String(item.id)])));
+}
+
+function syncPriceTemplatesLocal(mapped) {
+  writeStore((store) => {
+    store.priceTemplateLocals = store.priceTemplateLocals || {};
+    for (const item of mapped || []) {
+      const id = String(item.id || "");
+      if (!id) continue;
+      const prev = store.priceTemplateLocals[id] || {};
+      const remote = pickValuedPriceFields(item);
+      store.priceTemplateLocals[id] = {
+        ...prev,
+        id,
+      };
+      for (const [key, value] of Object.entries(remote || {})) {
+        store.priceTemplateLocals[id][key]=value
+      }
+      console.log(`store=== ${JSON.stringify(store.priceTemplateLocals[id])}`)
+    }
+    return store;
+  });
+}
 
 app.get("/api/price-templates", async (req, res) => {
   const { name = "", site = "", siteType = "" } = req.query;
   const store = readStore();
   const settings = resolveSettings(store.settings);
   if (settings.mode === "live") {
-    const cacheKey = `${name}|${site}|${siteType}`;
-    const hit = priceTemplateCache.get(cacheKey);
-    if (hit && Date.now() - hit.at < 15000) {
-      return res.json({ items: hit.items, live: true, cached: true, endpoint: ENDPOINTS.priceTemplateList });
-    }
+    const query = { name, site, pageNo: 1, pageSize: 20 };
     try {
-      const remote = await getPriceTemplateList(settings, {
-        name,
-        site,
-        siteType,
-        pageNo: 1,
-        pageSize: 20,
-      });
-      const items = mapPriceTemplates(remote);
-      priceTemplateCache.set(cacheKey, { at: Date.now(), items });
-      return res.json({ items, live: true, endpoint: ENDPOINTS.priceTemplateList });
+      const { items: mapped, fromCache } = await getCachedPriceTemplateList(settings, query);
+      if (!fromCache) syncPriceTemplatesLocal(mapped);
+      const filtered = siteType ? mapped.filter((item) => item.siteType === siteType) : mapped;
+      return res.json({ items: withLocalPrice(filtered), live: true, cached: Boolean(fromCache), endpoint: ENDPOINTS.priceTemplateList });
     } catch (error) {
-      if (hit) return res.json({ items: hit.items, live: true, stale: true, endpoint: ENDPOINTS.priceTemplateList });
+      const stale = peekPriceTemplateCache(query);
+      if (stale) return res.json({ items: withLocalPrice(siteType ? stale.filter((item) => item.siteType === siteType) : stale), live: true, stale: true, endpoint: ENDPOINTS.priceTemplateList });
       return res.status(502).json({ error: error.message, detail: error.detail || null, endpoint: ENDPOINTS.priceTemplateList });
     }
   }
@@ -430,7 +447,72 @@ app.get("/api/price-templates", async (req, res) => {
     siteType: siteType || "mainland",
     siteTypeLabel: "本土",
   }));
-  res.json({ items: fallback, live: false, endpoint: ENDPOINTS.priceTemplateList });
+  res.json({ items: withLocalPrice(fallback), live: false, endpoint: ENDPOINTS.priceTemplateList });
+});
+
+app.put("/api/price-templates/:id/local", (req, res) => {
+  const id = String(req.params.id);
+  let saved;
+  writeStore((store) => {
+    store.priceTemplateLocals = store.priceTemplateLocals || {};
+    const prev = store.priceTemplateLocals[id] || {};
+    store.priceTemplateLocals[id] = {
+      ...prev,
+      ...pickValuedPriceFields(req.body),
+      id,
+    };
+    saved = store.priceTemplateLocals[id];
+    return store;
+  });
+  res.json({ ok: true, item: mergePriceTemplate({ id }, saved) });
+});
+
+app.get("/api/fx-rates", (_req, res) => {
+  const rates = normalizeFxRates(readStore().fxRates);
+  res.json({ rates, rows: FX_ROWS, defaultRates: DEFAULT_FX_RATES });
+});
+
+app.put("/api/fx-rates", (req, res) => {
+  const rates = normalizeFxRates(req.body || {});
+  writeStore((store) => {
+    store.fxRates = rates;
+    return store;
+  });
+  res.json({ ok: true, rates, rows: FX_ROWS });
+});
+
+app.get("/api/freight-table", (_req, res) => {
+  const table = normalizeFreightTable(readStore().freightTable);
+  res.json({ table, rows: FREIGHT_ROWS });
+});
+
+app.put("/api/freight-table", (req, res) => {
+  const table = normalizeFreightTable(req.body?.table || req.body || {});
+  writeStore((store) => {
+    store.freightTable = table;
+    return store;
+  });
+  res.json({ ok: true, table, rows: FREIGHT_ROWS });
+});
+
+app.post("/api/price-templates/trial", (req, res) => {
+  try {
+    const tpl = req.body.template || {};
+    const store = readStore();
+    const result = calcPriceByTemplate(tpl, {
+      cost: req.body.cost,
+      wReal: req.body.wReal,
+      L: req.body.L,
+      W: req.body.W,
+      H: req.body.H,
+      kind: req.body.kind,
+      freightTable: normalizeFreightTable(store.freightTable),
+      fxRates: normalizeFxRates(store.fxRates),
+    });
+    res.json({ result });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 
 app.get("/api/pricing", (_req, res) => res.json({ items: readStore().pricing }));
@@ -455,9 +537,9 @@ app.post("/api/settings", (req, res) => {
 });
 
 app.get("/api/tasks/:id", (req, res) => {
-  const task = readStore().tasks.find((t) => t.id === req.params.id);
+  const task = getTask(req.params.id);
   if (!task) return res.status(404).json({ error: "任务不存在" });
-  res.json(task);
+  res.json(withTaskLogs(task));
 });
 
 app.post("/api/tasks", (req, res) => {
@@ -465,14 +547,7 @@ app.post("/api/tasks", (req, res) => {
     const task = createTask(req.body);
     setTimeout(() => runTask(task.id).catch((error) => {
       appendLog(task.id, "error", `任务异常退出：${error.message}`, error.detail || "");
-      writeStore((store) => {
-        const current = store.tasks.find((t) => t.id === task.id);
-        if (current) {
-          current.status = "failed";
-          current.error = error.message;
-        }
-        return store;
-      });
+      failTask(task.id, error);
     }), 30);
     res.json(task);
   } catch (error) {
@@ -491,6 +566,7 @@ app.get("*", (req, res, next) => {
   });
 });
 
+readStore();
 failInterruptedTasks();
 
 app.listen(PORT, () => {

@@ -108,6 +108,10 @@ async function callMiaoshouNow({ settings, path, body = {} }) {
   const bodyJson = dumps(body);
   const sign = generateSign(resolved.appSecret, path, timestamp, resolved.appId, bodyJson);
   const url = `${resolved.baseUrl.replace(/\/$/, "")}${path}`;
+  if (path.includes("price_template")) {
+    console.log(`[妙手] HTTP POST ${url}`);
+    console.log(`[妙手] HTTP body ${bodyJson}`);
+  }
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -119,6 +123,9 @@ async function callMiaoshouNow({ settings, path, body = {} }) {
     body: bodyJson,
   });
   const text = await response.text();
+  if (path.includes("price_template")) {
+    console.log(`[妙手] HTTP ${response.status} ${text}`);
+  }
   let json;
   try {
     json = JSON.parse(text);
@@ -545,39 +552,117 @@ export function claimTiktokToShop(settings, { detailIds = [], shopIds = [] }) {
   });
 }
 
-export function getPriceTemplateList(settings, { name = "", site = "", siteType = "", pageNo = 1, pageSize = 100 } = {}) {
-  return callMiaoshouData({
+export function hasBuyerLogisticCharge(item) {
+  return item?.buyerLogisticCharge != null && String(item.buyerLogisticCharge).trim() !== "";
+}
+
+export function inferPriceSiteType(item) {
+  if (hasBuyerLogisticCharge(item)) return "cross_border";
+  if (item?.siteType === "cross_border" || item?.siteType === "mainland") return item.siteType;
+  return "mainland";
+}
+
+export async function getPriceTemplateList(settings, { name = "", site = "", pageNo = 1, pageSize = 100 } = {}) {
+  const body = {
+    name,
+    site,
+    pageNo,
+    pageSize,
+  };
+  const data = await callMiaoshouData({
     settings,
     path: ENDPOINTS.priceTemplateList,
-    body: { name, site, siteType, pageNo, pageSize },
+    body,
   });
+  return data;
+}
+
+const PRICE_TEMPLATE_TTL_MS = 10 * 60 * 1000;
+const priceTemplateListCache = new Map();
+
+function priceTemplateCacheKey({ name = "", site = "", pageNo = 1, pageSize = 20 } = {}) {
+  return `${name}|${site}|${pageNo}|${pageSize}`;
+}
+
+export function peekPriceTemplateCache(query = {}) {
+  return priceTemplateListCache.get(priceTemplateCacheKey(query))?.items || null;
+}
+
+export async function getCachedPriceTemplateList(settings, opts = {}) {
+  const query = {
+    name: opts.name || "",
+    site: opts.site || "",
+    pageNo: opts.pageNo || 1,
+    pageSize: opts.pageSize || 20,
+  };
+  const key = priceTemplateCacheKey(query);
+  const hit = priceTemplateListCache.get(key);
+  if (!opts.force && hit && Date.now() - hit.fetchedAt < PRICE_TEMPLATE_TTL_MS) {
+    return { items: hit.items, fromCache: true };
+  }
+  const remote = await getPriceTemplateList(settings, query);
+  const items = mapPriceTemplates(remote);
+  priceTemplateListCache.set(key, { items, fetchedAt: Date.now() });
+  console.log(`items template：${JSON.stringify(items)}`)
+  return { items, fromCache: false };
+}
+
+function pickFirst(...values) {
+  for (const value of values) {
+    if (value != null && value !== "") return value;
+  }
+  return undefined;
 }
 
 export function mapPriceTemplates(remote) {
   const list = remote?.priceTemplateList || remote?.list || remote?.records || (Array.isArray(remote) ? remote : []);
-  return list.map((item, index) => ({
-    id: String(item.priceTemplateId ?? item.id ?? item.templateId ?? `tpl-${index}`),
-    name: item.name || item.templateName || `定价模板 ${index + 1}`,
-    site: item.site || "",
-    siteType: item.siteType || "",
-    siteTypeLabel: item.siteType === "cross_border" ? "跨境" : item.siteType === "mainland" ? "本土" : "",
-    currency: item.currency || "",
-    profitType: item.profitType || "",
-    profitPercent: item.profitPercent,
-    discount: item.discount,
-    remark: item.remark || "",
-  }));
+  return list.map((item, index) => {
+    const out = {};
+    for (const [key, value] of Object.entries(item || {})) {
+      if (value == null || value === "") continue;
+      out[key] = value;
+    }
+    const siteType = inferPriceSiteType(out);
+    out.id = String(item.priceTemplateId ?? item.id ?? item.templateId ?? `tpl-${index}`);
+    out.name = item.name || item.templateName || `定价模板 ${index + 1}`;
+    if (!out.platform) out.platform = "tiktok";
+    out.siteType = siteType;
+    if (siteType === "cross_border" || siteType === "mainland") {
+      out.siteTypeLabel = siteType === "cross_border" ? "跨境" : "本土";
+    }
+    const vat = pickFirst(out.vatChargePercent, item.vatPercent);
+    if (vat != null) out.vatChargePercent = vat;
+    const tariff = pickFirst(out.tariffChargePercent, item.tariffPercent);
+    if (tariff != null) out.tariffChargePercent = tariff;
+    if (item.weightSource === "sku" || item.weightSource === "package") out.weightSource = item.weightSource;
+    return out;
+  });
+}
+
+function flag01(value) {
+  return value === 1 || value === "1" || value === true ? 1 : 0;
 }
 
 export function mapShops(remote) {
   const list = remote?.list || remote?.records || remote?.shopList || (Array.isArray(remote) ? remote : []);
-  return list.map((item) => ({
-    id: String(item.shopId ?? item.id ?? item.shop_id),
-    platform: String(item.platform || item.platformCode || "tiktok").toLowerCase(),
-    platformName: item.platformName || (String(item.platform || "tiktok").toLowerCase() === "tiktok" ? "TikTok" : item.platform),
-    site: item.site || item.country || item.region || "",
-    name: item.platformShopName || item.shopName || item.name || item.shop_name || item.shopNick || String(item.shopId),
-    type: item.siteName || item.shopType || item.type || item.shop_type || "授权店铺",
-    status: item.status === "normal" ? "authorized" : (item.status || "authorized"),
-  })).filter((item) => item.id && item.id !== "undefined");
+  return list.map((item) => {
+    const isCb = flag01(item.isCb);
+    const isCnsc = flag01(item.isCnsc);
+    return {
+      id: String(item.shopId ?? item.id ?? item.shop_id),
+      platform: String(item.platform || item.platformCode || "tiktok").toLowerCase(),
+      platformName: item.platformName || (String(item.platform || "tiktok").toLowerCase() === "tiktok" ? "TikTok" : item.platform),
+      site: item.site || item.country || item.region || "",
+      siteName: item.siteName || "",
+      name: item.platformShopName || item.shopName || item.name || item.shop_name || item.shopNick || String(item.shopId),
+      shopNick: item.shopNick || "",
+      parentShopId: item.parentShopId == null || item.parentShopId === "" ? "" : String(item.parentShopId),
+      isCb,
+      isCnsc,
+      type: isCb ? "跨境" : "本土",
+      gmtExpire: item.gmtExpire || "",
+      gmtLastAuth: item.gmtLastAuth || "",
+      status: item.status === "normal" ? "authorized" : (item.status || "authorized"),
+    };
+  }).filter((item) => item.id && item.id !== "undefined");
 }

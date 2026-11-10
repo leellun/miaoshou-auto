@@ -10,7 +10,9 @@ import {
   parseJsonFromModel,
   saveGeneratedImage,
 } from "./openai-api.js";
-import { mapSourceFiles } from "./detail-flow.js";
+import { fitImageFileMaxSide, mapSourceFiles } from "./detail-flow.js";
+
+const MAX_PRODUCT_INPUT_SIDE = 1024;
 import {
   PRODUCT_IMAGE_SYSTEM_PROMPT,
   PRODUCT_IMAGE_USER_PROMPT_TEMPLATE,
@@ -152,11 +154,15 @@ async function productGenerate({ sources, site, imageKind, outputDir, onLog, onl
       throw err;
     }
     const originalIndex = Math.max(0, sources.indexOf(source));
+    const stem = path.join(outputDir, String(index + 1).padStart(3, "0"));
+    const inputFile = `${stem}.input.png`;
+    await fitImageFileMaxSide(source.file, inputFile, MAX_PRODUCT_INPUT_SIDE);
+    const inputSource = { ...source, file: inputFile };
     log(onLog, `product-analyze：${index + 1}/${items.length} ${source.filename}`);
     let analysis;
     let flags;
     try {
-      ({ analysis, flags } = await analyzeProductImage(source, {
+      ({ analysis, flags } = await analyzeProductImage(inputSource, {
         site,
         imageKind: kind,
         index: originalIndex,
@@ -173,11 +179,10 @@ async function productGenerate({ sources, site, imageKind, outputDir, onLog, onl
     try {
       const generated = await editImageWithReferences({
         prompt: analysis.image_edit_prompt,
-        files: [source.file],
+        files: [inputFile],
         size: cfg.imageSize || "1024x1024",
         logLabel: `${kind === "sku" ? "SKU" : "主图"}生图-${source.filename}-images-edits`,
       });
-      const stem = path.join(outputDir, String(index + 1).padStart(3, "0"));
       await saveGeneratedImage(generated, dest);
       fs.writeFileSync(`${stem}.prompt.txt`, `${analysis.image_edit_prompt}\n`, "utf8");
       fs.writeFileSync(`${stem}.analysis.json`, `${JSON.stringify({

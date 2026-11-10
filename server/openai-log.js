@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
+
+const usageLogStore = new AsyncLocalStorage();
 
 const logDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "data", "openai-logs");
 let seq = 0;
@@ -69,6 +72,50 @@ export async function snapshotRequestBody(body) {
   return serializeBody(body);
 }
 
+export function runWithOpenAIUsageLog(logFn, fn) {
+  return usageLogStore.run(logFn, fn);
+}
+
+export function isOpenAIUsageLogActive() {
+  return typeof usageLogStore.getStore() === "function";
+}
+
+function emitOpenAIUsage({ label, usage, elapsedMs }) {
+  const usageText = formatOpenAIUsage(usage);
+  const line = `OpenAI usage · ${label || "openai"} · ${usageText}${elapsedMs != null ? ` · ${elapsedMs}ms` : ""}`;
+  console.log(`[OpenAI usage] ${line}`);
+  const sink = usageLogStore.getStore();
+  if (typeof sink === "function") {
+    sink({
+      label: label || "openai",
+      usage,
+      elapsedMs: elapsedMs ?? null,
+      message: line,
+    });
+  }
+}
+
+export function extractOpenAIUsage(responseBody) {
+  const body = responseBody && typeof responseBody === "object" ? responseBody : {};
+  const raw = body.usage || body.response?.usage || {};
+  const input = Number(raw.input_tokens ?? raw.prompt_tokens ?? raw.inputTokens ?? 0);
+  const output = Number(raw.output_tokens ?? raw.completion_tokens ?? raw.outputTokens ?? 0);
+  const total = Number(raw.total_tokens ?? raw.totalTokens ?? (input + output));
+  return {
+    ...raw,
+    input_tokens: Number.isFinite(input) ? input : 0,
+    output_tokens: Number.isFinite(output) ? output : 0,
+    total_tokens: Number.isFinite(total) ? total : 0,
+  };
+}
+
+export function formatOpenAIUsage(usage) {
+  const input = usage?.input_tokens ?? 0;
+  const output = usage?.output_tokens ?? 0;
+  const total = usage?.total_tokens ?? 0;
+  return `input_tokens ${input} · output_tokens ${output} · total_tokens ${total}`;
+}
+
 export async function writeOpenAILog({
   label = "",
   method,
@@ -80,6 +127,8 @@ export async function writeOpenAILog({
   error,
   elapsedMs,
 } = {}) {
+  const usage = extractOpenAIUsage(responseBody);
+  emitOpenAIUsage({ label, usage, elapsedMs });
   try {
     fs.mkdirSync(logDir, { recursive: true });
     seq += 1;
@@ -89,6 +138,7 @@ export async function writeOpenAILog({
       time: stamp,
       label: label || "",
       elapsed_ms: elapsedMs ?? null,
+      usage,
       request: {
         method: String(method || "POST").toUpperCase(),
         url,

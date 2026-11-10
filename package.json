@@ -10,6 +10,7 @@
     "dev:server1": "node --watch-path=server --watch-path=.env server/index.js",
     "dev:server": "node server/index.js",
     "test:openai": "node scripts/test-openai.js",
+    "test:price": "node scripts/test-price.js",
     "build": "vite build --config web/vite.config.js",
     "start": "node server/index.js"
   },
@@ -19,6 +20,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "sharp": "^0.35.5",
     "undici": "^8.11.2"
   },
   "devDependencies": {

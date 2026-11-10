@@ -287,8 +287,31 @@ export function replaceNotesImageSrcs(notesHtml, newUrls) {
   return `${html}${extra}`;
 }
 
+function stripEmptyParagraphs(html) {
+  return String(html || "")
+    .replace(/<p>(?:\s|&nbsp;)*<\/p>/gi, "")
+    .replace(/^(?:\s|&nbsp;)+/, "")
+    .replace(/(?:\s|&nbsp;)+$/, "");
+}
+
 export function assembleNotes(copyText, originalNotes, newImageUrls) {
   const textHtml = wrapDetailTextAsHtml(copyText);
-  const imageHtml = newImageUrls?.length ? replaceNotesImageSrcs(originalNotes, newImageUrls) : String(originalNotes || "");
-  return `${textHtml}${imageHtml}`;
+  const imageHtml = stripEmptyParagraphs(
+    newImageUrls?.length ? replaceNotesImageSrcs(originalNotes, newImageUrls) : String(originalNotes || ""),
+  );
+  if (!textHtml) return imageHtml;
+  return `${imageHtml}${textHtml}`;
+}
+
+export function assembleInterleavedNotes(items = []) {
+  const parts = [];
+  for (const item of items || []) {
+    const url = String(item?.url || "").trim();
+    if (url) {
+      parts.push(`<p><img src="${url.replace(/"/g, "&quot;")}"></p>`);
+    }
+    const textHtml = wrapDetailTextAsHtml(item?.text);
+    if (textHtml) parts.push(textHtml);
+  }
+  return stripEmptyParagraphs(parts.join(""));
 }

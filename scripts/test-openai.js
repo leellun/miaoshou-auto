@@ -4,8 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateTitle, hasOpenAIConfig } from "../server/openai-api.js";
 import {
+  composeDetailImages,
   extractionPlanDetailImages,
-  generateDetailCopy,
   generateDetailImages,
 } from "../server/detail-flow.js";
 import { runProductGenerate } from "../server/product-image-flow.js";
@@ -17,8 +17,7 @@ const HELP = `分开测试 OpenAI 详情链路（每步一次交互，结果写�
 
 详情图：
   node scripts/test-openai.js --step analyze --input 原图目录 --out data/openai-test/run1
-  node scripts/test-openai.js --step detail-copy --input data/openai-test/run1/extract.json
-  node scripts/test-openai.js --step detail-copy --work data/openai-test/run1
+  node scripts/test-openai.js --step compose --work data/openai-test/run1
   node scripts/test-openai.js --step generate --work data/openai-test/run1
   node scripts/test-openai.js --step generate --work data/openai-test/run1 --page page_01
 
@@ -107,19 +106,6 @@ function sourceImages(work, input) {
   return listImages(input);
 }
 
-function resolveExtractFile(args, work) {
-  const input = args.input ? path.resolve(args.input) : "";
-  if (input && fs.existsSync(input) && fs.statSync(input).isFile()) {
-    if (!/\.json$/i.test(input)) throw new Error(`--input 需要 extract.json，当前是 ${input}`);
-    return input;
-  }
-  if (input && fs.existsSync(input) && fs.statSync(input).isDirectory()) {
-    const nested = path.join(input, "extract.json");
-    if (fs.existsSync(nested)) return nested;
-  }
-  return path.join(work, "extract.json");
-}
-
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || !args.step) {
@@ -127,12 +113,12 @@ async function main() {
     if (!args.step) process.exitCode = 1;
     return;
   }
-  if (!hasOpenAIConfig()) throw new Error("未配置 OPENAI_API_KEY，无法测试");
-
   const step = String(args.step).toLowerCase();
   const work = resolveWork(args);
   console.log(`工作目录 ${work}`);
-  console.log(`步骤 ${step}（每次 OpenAI 交互会在 data/openai-logs/ 单独写一个 log）`);
+  if (step !== "compose" && !hasOpenAIConfig()) throw new Error("未配置 OPENAI_API_KEY，无法测试");
+  if (step !== "compose") console.log(`步骤 ${step}（每次 OpenAI 交互会在 data/openai-logs/ 单独写一个 log）`);
+  else console.log(`步骤 ${step}（本地按 plan 裁切竖拼，不调用 OpenAI）`);
 
   if (step === "title") {
     const original = String(args.title || "").trim();
@@ -163,17 +149,21 @@ async function main() {
     return;
   }
 
-  if (step === "detail-copy") {
-    const extractFile = resolveExtractFile(args, work);
-    const extract = readJson(extractFile);
-    if (!extract?.images?.length) throw new Error(`${extractFile} 里没有 images`);
-    const outDir = args.out || args.work ? work : path.dirname(extractFile);
-    fs.mkdirSync(outDir, { recursive: true });
-    const detail = await generateDetailCopy({ extract, onLog: log });
-    writeJson(path.join(outDir, "detail-copy.json"), detail.copy);
-    fs.writeFileSync(path.join(outDir, "detail-copy.txt"), detail.text, "utf8");
-    console.log(`输入 ${extractFile}`);
-    console.log(`已写入 ${path.join(outDir, "detail-copy.txt")}`);
+  if (step === "compose") {
+    const extract = readJson(path.join(work, "extract.json"));
+    const plan = readJson(path.join(work, "plan.json"));
+    const files = sourceImages(work, args.input);
+    if (!files.length) throw new Error("compose 需要 --work 下的 source 目录，或再传 --input");
+    const dest = path.join(work, args.page ? `compose-${args.page}` : "compose");
+    const flow = await composeDetailImages({
+      plan,
+      extract,
+      files,
+      outputDir: dest,
+      pageId: args.page,
+      onLog: log,
+    });
+    console.log(`已本地拼接 ${flow.files.length} 张 → ${dest}${args.page ? `（仅 ${args.page}）` : ""}`);
     return;
   }
 

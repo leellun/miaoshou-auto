@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import PricingSetup from "./PricingSetup.jsx";
+import FxRates from "./FxRates.jsx";
+import FreightTable from "./FreightTable.jsx";
 
 const NAV = [
   { group: "工作台", items: [
@@ -11,6 +14,8 @@ const NAV = [
   ]},
   { group: "配置", items: [
     { id: "pricing", title: "定价模板", icon: "￥" },
+    { id: "fx", title: "汇率设置", icon: "⇄" },
+    { id: "freight", title: "跨境运费", icon: "📦" },
     { id: "shops", title: "店铺与站点", icon: "⌘" },
     { id: "settings", title: "系统设置", icon: "⚙" },
   ]},
@@ -52,6 +57,39 @@ function Cover({ src, fallback = "⌁" }) {
   );
 }
 
+function fmtPct(value) {
+  return value == null || value === "" ? "—" : `${value}%`;
+}
+
+function logisticsTypeLabel(type, cross) {
+  if (type === "official_freight_tpl" || type === "officialFreightTpl") return "官方跨境物流";
+  const third = cross ? "第三方 · " : "";
+  if (type === "first_continued") return `${third}首重续重`;
+  if (type === "byWeightAndFixedCharge" || type === "weight_interval") return `${third}按重量计费`;
+  if (type === "fixed") return `${third}统一运费`;
+  return type || "—";
+}
+
+function logisticsSummary(item) {
+  const type = item.logisticsComputeType;
+  const cross = item.siteType === "cross_border";
+  if (type === "official_freight_tpl" || type === "officialFreightTpl") return "官方跨境物流";
+  const third = cross ? "第三方 · " : "";
+  if (type === "first_continued") {
+    const first = [item.firstWeightCharge != null ? `${item.firstWeightCharge}元` : "", item.firstWeightInterval != null ? `/${item.firstWeightInterval}kg` : ""].join("");
+    const light = item.isCalLightCargo === 1 || item.isCalLightCargo === "1" ? " · 抛重" : "";
+    return `${third}首重续重${first ? ` · 首重 ${first}` : ""}${light}`;
+  }
+  if (type === "byWeightAndFixedCharge" || type === "weight_interval") {
+    const rate = item.firstWeightCharge;
+    const fixed = item.continuedWeightCharge;
+    const bits = [rate != null && rate !== "" ? `${rate}元/kg` : "", fixed != null && fixed !== "" ? `固定 ${fixed}` : ""].filter(Boolean).join(" · ");
+    return `${third}按重量计费${bits ? ` · ${bits}` : ""}`;
+  }
+  if (type === "fixed") return `${third}统一运费 ${item.logisticsCharge ?? "—"}`;
+  return logisticsTypeLabel(type, cross);
+}
+
 function logLevelText(level) {
   if (level === "error") return "错误";
   if (level === "warn") return "警告";
@@ -75,9 +113,11 @@ export default function App() {
   const [shops, setShops] = useState([]);
   const [pricing, setPricing] = useState([]);
   const [priceTemplates, setPriceTemplates] = useState([]);
-  const [priceSiteType, setPriceSiteType] = useState("mainland");
+  const [shopPriceTemplates, setShopPriceTemplates] = useState([]);
+  const [priceSiteType, setPriceSiteType] = useState("");
   const [priceQuery, setPriceQuery] = useState("");
   const [priceLoading, setPriceLoading] = useState(false);
+  const [priceSetupItem, setPriceSetupItem] = useState(null);
   const [settings, setSettings] = useState(null);
   const [common, setCommon] = useState({ items: [], counts: {} });
   const [tiktok, setTiktok] = useState({ items: [], counts: {} });
@@ -108,7 +148,6 @@ export default function App() {
   const [aiTitle, setAiTitle] = useState(true);
   const [autoCategory, setAutoCategory] = useState(true);
   const [claimPerPlatform, setClaimPerPlatform] = useState(true);
-  const [pricingId, setPricingId] = useState("price-25");
   const [picker, setPicker] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [pickerPlatform, setPickerPlatform] = useState("tiktok");
@@ -122,12 +161,25 @@ export default function App() {
   const [assignPendingIds, setAssignPendingIds] = useState(null);
   const [bootError, setBootError] = useState("");
 
-  const crumb = NAV.flatMap((g) => g.items).find((x) => x.id === view)?.title || "自动化总览";
-  const chosenShops = selectedShops.map((id) => selectedShopMap[id] || shops.find((s) => s.id === id)).filter(Boolean);
+  const crumb = view === "pricing-setup" ? "定价模板设置" : (NAV.flatMap((g) => g.items).find((x) => x.id === view)?.title || "自动化总览");
+  const chosenShops = selectedShops.map((id) => shops.find((s) => String(s.id) === String(id)) || selectedShopMap[id]).filter(Boolean);
   const draftList = Object.values(draftSelected);
   const linkCount = links.split(/\n/).map((x) => x.trim()).filter(Boolean).length;
-  const pricingName = priceTemplates.find((p) => p.id === pricingId)?.name || pricing.find((p) => p.id === pricingId)?.name || "未选择";
-  const collectSite = chosenShops.find((s) => String(s.platform).toLowerCase() === "tiktok")?.site || chosenShops[0]?.site || "";
+  const boundPricingCount = chosenShops.filter((s) => s.pricingId).length;
+
+  function shopPayload(shop) {
+    return {
+      id: shop.id,
+      name: shop.name,
+      platform: shop.platform,
+      platformName: shop.platformName,
+      site: shop.site,
+      type: shop.type,
+      isCb: shop.isCb,
+      isCnsc: shop.isCnsc,
+      pricingId: shop.pricingId,
+    };
+  }
 
   function notify(text) {
     setToast(text);
@@ -312,14 +364,7 @@ export default function App() {
       body: {
         ids: useIds,
         shopIds: shopsToUse.map((shop) => shop.id),
-        shops: shopsToUse.map((shop) => ({
-          id: shop.id,
-          name: shop.name,
-          platform: shop.platform,
-          platformName: shop.platformName,
-          site: shop.site,
-        })),
-        pricingId,
+        shops: shopsToUse.map(shopPayload),
         autoPublish: publishWhen === "now",
         schedule: publishWhen,
         aiTitle,
@@ -392,24 +437,13 @@ export default function App() {
   }, [picker, pickerPlatform, pickerSite, shopSearch]);
 
   useEffect(() => {
-    const shop = chosenShops.find((s) => String(s.platform).toLowerCase() === "tiktok") || chosenShops[0];
-    if (!shop?.type) return;
-    if (/跨境/.test(shop.type)) setPriceSiteType("cross_border");
-    else if (/本土/.test(shop.type)) setPriceSiteType("mainland");
-  }, [selectedShops.join("|")]);
-
-  useEffect(() => {
-    if (view !== "collect" && view !== "pricing") return;
+    if (view !== "pricing") return;
     const timer = setTimeout(async () => {
       setPriceLoading(true);
       try {
-        const query = new URLSearchParams({ site: collectSite, siteType: priceSiteType, name: priceQuery });
+        const query = new URLSearchParams({ site: "", siteType: priceSiteType, name: priceQuery });
         const data = await api(`/api/price-templates?${query}`);
-        const items = data.items || [];
-        setPriceTemplates(items);
-        if (items.length && !items.some((item) => item.id === pricingId)) {
-          setPricingId(items[0].id);
-        }
+        setPriceTemplates(data.items || []);
       } catch (error) {
         notify(error.message);
       } finally {
@@ -417,7 +451,14 @@ export default function App() {
       }
     }, priceQuery ? 280 : 0);
     return () => clearTimeout(timer);
-  }, [view, collectSite, priceSiteType, priceQuery]);
+  }, [view, priceSiteType, priceQuery]);
+
+  useEffect(() => {
+    if (view !== "shops") return;
+    api("/api/price-templates?site=&siteType=").then((data) => {
+      setShopPriceTemplates(data.items || []);
+    }).catch((error) => notify(error.message));
+  }, [view]);
 
   useEffect(() => {
     if (!drawer || !activeTask?.id) return;
@@ -464,14 +505,7 @@ export default function App() {
       body: {
         linksText: sourceLinks,
         shopIds: selectedShops,
-        shops: chosenShops.map((shop) => ({
-          id: shop.id,
-          name: shop.name,
-          platform: shop.platform,
-          platformName: shop.platformName,
-          site: shop.site,
-        })),
-        pricingId,
+        shops: chosenShops.map(shopPayload),
         autoPublish: publishWhen === "now",
         schedule: publishWhen,
         aiTitle,
@@ -604,7 +638,7 @@ export default function App() {
             <div className="nav-title">{group.group}</div>
             <nav className="nav">
               {group.items.map((item) => (
-                <button key={item.id} className={view === item.id ? "active" : ""} onClick={() => setView(item.id)}>
+                <button key={item.id} className={view === item.id || (item.id === "pricing" && view === "pricing-setup") ? "active" : ""} onClick={() => { setView(item.id); if (item.id === "pricing") setPriceSetupItem(null); }}>
                   <i>{item.icon}</i><span>{item.title}</span>
                 </button>
               ))}
@@ -615,7 +649,12 @@ export default function App() {
       </aside>
       <main className="main">
         <header className="topbar">
-          <div className="crumb">{crumb}</div>
+          <div className="crumb">{view === "pricing-setup" ? (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+              <button className="btn" type="button" onClick={() => { setView("pricing"); setPriceSetupItem(null); }}>← 返回</button>
+              {crumb}
+            </span>
+          ) : crumb}</div>
           <div className="top-actions">
             <button className="btn" onClick={() => { setView("dashboard"); setExceptionsOpen(true); }}>查看异常 {exceptionCount}</button>
             <button className="btn primary" onClick={() => { setView("collect"); setActiveTask(null); }}>＋ 新建全自动任务</button>
@@ -708,23 +747,6 @@ export default function App() {
                   <div className="switchrow"><div><b>自动匹配类目属性</b><div className="meta">匹配TikTok类目并补齐必填属性</div></div><Switch on={autoCategory} onClick={() => setAutoCategory(!autoCategory)} /></div>
                   <div className="switchrow"><div><b>多平台多次认领</b><div className="meta">TikTok、虾皮等各调一次 claimed。同一平台多个店铺也会各调一次 claimed，不重复采集链接。</div></div><Switch on={claimPerPlatform} onClick={() => setClaimPerPlatform(!claimPerPlatform)} /></div>
                 </div>
-                <div className="grid2" style={{ marginTop: 14 }}>
-                  <div className="field"><label>站点类型</label>
-                    <select value={priceSiteType} onChange={(e) => setPriceSiteType(e.target.value)}>
-                      <option value="mainland">本土 mainland</option>
-                      <option value="cross_border">跨境 cross_border</option>
-                    </select>
-                  </div>
-                  <div className="field"><label>定价模板</label>
-                    <select value={pricingId} onChange={(e) => setPricingId(e.target.value)} disabled={priceLoading || !priceTemplates.length}>
-                      {!priceTemplates.length && <option value="">{priceLoading ? "正在加载模板…" : "当前站点暂无定价模板"}</option>}
-                      {priceTemplates.map((item) => (
-                        <option key={item.id} value={item.id}>{item.name}{item.profitPercent != null ? ` · 利润${item.profitPercent}%` : ""}</option>
-                      ))}
-                    </select>
-                    <div className="hint">按已选店铺站点 {collectSite || "未选"} 从妙手拉取，模板用下拉选择即可</div>
-                  </div>
-                </div>
                 <div className="field" style={{ marginTop: 14 }}><label>发布时间</label>
                     <select value={publishWhen} onChange={(e) => setPublishMode(e.target.value)}>
                       <option value="now">处理完成后立即发布</option>
@@ -750,7 +772,7 @@ export default function App() {
                   <div className="summary-item"><span>最终店铺</span><b>{chosenShops.length} 个</b></div>
                   <div className="summary-item"><span>覆盖平台</span><b>{new Set(chosenShops.map((s) => s.platform)).size} 个</b></div>
                   <div className="summary-item"><span>多平台认领</span><b>{claimPerPlatform ? "分别认领" : "共用一条"}</b></div>
-                  <div className="summary-item"><span>定价策略</span><b>{pricingName}</b></div>
+                  <div className="summary-item"><span>定价模板</span><b>{chosenShops.length ? `${boundPricingCount}/${chosenShops.length} 店铺已绑定` : "按店铺绑定"}</b></div>
                 </div>
                 {publishWhen === "now" ? (
                   <div className="auto-mark"><span>✓</span><div><b>全自动上架已开启</b><small>采集 → 公共采集箱 → TK采集箱 → 校验 → 发布</small></div></div>
@@ -975,15 +997,25 @@ export default function App() {
           </div>
         )}
 
+        {view === "pricing-setup" && priceSetupItem && (
+          <PricingSetup
+            item={priceSetupItem}
+            notify={notify}
+            onBack={() => { setView("pricing"); setPriceSetupItem(null); }}
+            onSaved={(local) => {
+              setPriceSetupItem((prev) => prev ? { ...prev, ...local } : prev);
+              setPriceTemplates((prev) => prev.map((row) => row.id === priceSetupItem.id ? { ...row, ...local } : row));
+            }}
+          />
+        )}
+
         {view === "pricing" && (
           <div className="content">
-            <div className="heading"><div><h1>定价模板</h1><p>使用妙手 TikTok 定价模板。模板在 ERP 里维护，这里按站点筛选后选择使用，不必做成复杂表单。</p></div></div>
+            <div className="heading"><div><h1>定价模板</h1><p>妙手拉取模板费率，点设置补达人佣金、基建费、增长服务费并试算。</p></div></div>
             <div className="filterbar">
               <div className="search">
-                <select className="btn" value={collectSite} disabled>
-                  <option value={collectSite}>{collectSite ? `站点 ${collectSite}` : "请先在采集页选择店铺"}</option>
-                </select>
                 <select className="btn" value={priceSiteType} onChange={(e) => setPriceSiteType(e.target.value)}>
+                  <option value="">全部</option>
                   <option value="mainland">本土</option>
                   <option value="cross_border">跨境</option>
                 </select>
@@ -993,17 +1025,20 @@ export default function App() {
             </div>
             <div className="card table-card">
               <table className="data-table">
-                <thead><tr><th>模板名称</th><th>站点</th><th>类型</th><th>利润</th><th>折扣</th><th>币种</th><th>操作</th></tr></thead>
+                <thead><tr><th>模板名称</th><th>站点</th><th>利润</th><th>折扣</th><th>平台佣金</th><th>运费</th><th>其他费用</th><th>操作</th></tr></thead>
                 <tbody>
                   {priceTemplates.map((item) => (
                     <tr key={item.id}>
-                      <td><b>{item.name}</b>{item.id === pricingId ? <span className="badge" style={{ marginLeft: 8 }}>采集中使用</span> : null}</td>
-                      <td>{item.site}</td>
-                      <td>{item.siteTypeLabel || (priceSiteType === "cross_border" ? "跨境" : "本土")}</td>
-                      <td>{item.profitPercent != null ? `${item.profitPercent}%` : "—"}</td>
-                      <td>{item.discount != null ? item.discount : "—"}</td>
-                      <td>{item.currency || "—"}</td>
-                      <td><div className="actions"><button onClick={() => { setPricingId(item.id); notify("已用于采集任务"); }}>用于采集</button></div></td>
+                      <td><b>{item.name}</b></td>
+                      <td className="nowrap">{item.platform || "tiktok"} / {item.site || "—"} · {item.siteTypeLabel || "—"}</td>
+                      <td>{fmtPct(item.profitPercent)}</td>
+                      <td>{item.discount != null ? `${item.discount} 折` : "—"}</td>
+                      <td>{fmtPct(item.platformChargePercent)}</td>
+                      <td>{logisticsSummary(item)}</td>
+                      <td>{item.otherCharge != null ? `${item.otherCharge} 元` : "—"}</td>
+                      <td><div className="actions">
+                        <button type="button" onClick={() => { setPriceSetupItem(item); setView("pricing-setup"); }}>设置</button>
+                      </div></td>
                     </tr>
                   ))}
                 </tbody>
@@ -1014,15 +1049,61 @@ export default function App() {
           </div>
         )}
 
+        {view === "fx" && (
+          <FxRates notify={notify} />
+        )}
+
+        {view === "freight" && (
+          <FreightTable notify={notify} />
+        )}
+
         {view === "shops" && (
           <div className="content">
-            <div className="heading"><div><h1>店铺与站点</h1><p>从妙手拉取已授权店铺。密钥只保存在服务器，不会下发到浏览器。</p></div>
+            <div className="heading"><div><h1>店铺与站点</h1><p>从妙手拉取已授权店铺，并给每个店铺绑定定价模板。同步不会清掉已绑定的模板。</p></div>
               <button className="btn primary" onClick={async () => { const d = await api("/api/shops/sync", { method: "POST" }); setShops(d.items); notify("店铺已同步"); }}>同步店铺列表</button></div>
             <div className="card table-card">
               <table className="data-table">
-                <thead><tr><th>店铺</th><th>平台</th><th>站点</th><th>类型</th><th>状态</th></tr></thead>
-                <tbody>{shops.map((s) => <tr key={s.id}><td>{s.name}<div className="meta">{s.id}</div></td><td>{s.platformName}</td><td>{s.site}</td><td>{s.type}</td><td><Status status={s.status} text="授权正常" /></td></tr>)}</tbody>
+                <thead><tr><th>店铺</th><th>平台</th><th>站点</th><th>类型</th><th>全球</th><th>定价模板</th><th>状态</th></tr></thead>
+                <tbody>{shops.map((s) => {
+                  const options = shopPriceTemplates.filter((item) => !s.site || !item.site || item.site === s.site);
+                  if (s.pricingId && !options.some((item) => String(item.id) === String(s.pricingId))) {
+                    const hit = shopPriceTemplates.find((item) => String(item.id) === String(s.pricingId));
+                    options.unshift(hit || { id: s.pricingId, name: `模板 ${s.pricingId}` });
+                  }
+                  return (
+                    <tr key={s.id}>
+                      <td>{s.name}<div className="meta">{s.id}</div></td>
+                      <td>{s.platformName}</td>
+                      <td>{s.site}{s.siteName ? ` · ${s.siteName}` : ""}</td>
+                      <td>{Number(s.isCb) === 1 ? "跨境" : "本土"}</td>
+                      <td>{Number(s.isCnsc) === 1 ? "是" : "否"}</td>
+                      <td>
+                        <select
+                          className="btn"
+                          value={s.pricingId || ""}
+                          onChange={async (e) => {
+                            const pricingId = e.target.value;
+                            try {
+                              const data = await api(`/api/shops/${s.id}/pricing`, { method: "PUT", body: { pricingId } });
+                              setShops((prev) => prev.map((row) => String(row.id) === String(s.id) ? { ...row, ...data.item } : row));
+                              notify(pricingId ? "定价模板已绑定" : "已取消绑定");
+                            } catch (err) {
+                              notify(err.message);
+                            }
+                          }}
+                        >
+                          <option value="">未绑定</option>
+                          {options.map((item) => (
+                            <option key={item.id} value={item.id}>{item.name}{item.siteTypeLabel ? ` · ${item.siteTypeLabel}` : ""}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td><Status status={s.status} text="授权正常" /></td>
+                    </tr>
+                  );
+                })}</tbody>
               </table>
+              {!shops.length && <div className="empty-note">还没有店铺，先同步店铺列表</div>}
             </div>
           </div>
         )}
@@ -1157,6 +1238,26 @@ export default function App() {
                     {(activeTask.steps || []).map((step, i) => (
                       <div className={`step ${step.state}`} key={i}><span>{step.label}</span><span>{step.state === "done" ? "完成" : step.state === "current" ? "处理中" : "等待"}</span></div>
                     ))}
+                  </div>
+                  <div className="usage-box">
+                    <div className="usage-head">OpenAI tokens</div>
+                    <div className="usage-totals">
+                      <span>input_tokens {(activeTask.openaiUsage?.input_tokens ?? 0)}</span>
+                      <span>output_tokens {(activeTask.openaiUsage?.output_tokens ?? 0)}</span>
+                      <span>total_tokens {(activeTask.openaiUsage?.total_tokens ?? 0)}</span>
+                    </div>
+                    {(activeTask.openaiUsage?.calls || []).length ? (
+                      <div className="usage-calls">
+                        {(activeTask.openaiUsage.calls || []).map((call, i) => (
+                          <div className="usage-call" key={`${call.t}-${i}`}>
+                            <span>{call.label}</span>
+                            <span>input_tokens {call.input_tokens}</span>
+                            <span>output_tokens {call.output_tokens}</span>
+                            <span>total_tokens {call.total_tokens}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : <div className="usage-empty">还没有 OpenAI 调用</div>}
                   </div>
                   <div className="log-head">运行日志<span>红字是失败点，黄字是警告</span></div>
                   <div className="log-box">
