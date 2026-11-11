@@ -1,4 +1,5 @@
 import { calcCrossBorderFreight, calcCrossBorderPrice } from "./cross-border-price.js";
+import { currencyOfSite } from "./fx-rates.js";
 
 export const DEFAULT_LOCAL_PRICE = {
   commissionPercent: 5,
@@ -13,8 +14,13 @@ export const DEFAULT_LOCAL_PRICE = {
 export function normalizeWeightSource(value) {
   const t = String(value || "").toLowerCase();
   if (t === "sku" || t.includes("sku")) return "sku";
-  if (t === "package" || t.includes("包裹") || t.includes("package")) return "package";
+  if (t === "spu" || t === "package" || t.includes("包裹") || t.includes("package")) return "package";
   return "";
+}
+
+/** 妙手 weightRefType：spu=产品包裹重量，sku=SKU重量。 */
+export function weightRefTypeOf(tpl) {
+  return normalizeWeightSource(tpl?.weightRefType || tpl?.weightSource) === "sku" ? "sku" : "spu";
 }
 
 export function normalizeProfitType(value) {
@@ -64,13 +70,11 @@ export function compactPriceFields(item) {
 }
 
 export function pickValuedPriceFields(item) {
-  const skip = new Set(["fieldLocked"]);
   const out = {};
   for (const [key, value] of Object.entries(item || {})) {
-    if (skip.has(key)) continue;
-    if (value == null || value === "") continue;
-    if (typeof value === "number" && !Number.isFinite(value)) continue;
-    if (typeof value === "object") continue;
+    if (key==='fieldLocked') continue;
+    // if (value == null || value === "") continue;
+    // if (typeof value === "object") continue;
     out[key] = value;
   }
   return out;
@@ -91,8 +95,8 @@ export function mergePriceTemplate(remote, local = {}) {
   else next.profitType = DEFAULT_LOCAL_PRICE.profitType;
   if (fromApi(decimalSrc)) next.priceProcessDecimalType = normalizeDecimalType(decimalSrc);
   else next.priceProcessDecimalType = DEFAULT_LOCAL_PRICE.priceProcessDecimalType;
-  const weightSrc = fromLocal.weightSource || fromRemote.weightSource;
-  if (fromApi(weightSrc)) next.weightSource = normalizeWeightSource(weightSrc) || weightSrc;
+  const weightSrc = fromLocal.weightRefType || fromRemote.weightRefType || fromLocal.weightSource || fromRemote.weightSource;
+  if (fromApi(weightSrc)) next.weightRefType = normalizeWeightSource(weightSrc) === "sku" ? "sku" : "spu";
   if (!fromApi(fromRemote.vatChargePercent) && !fromApi(fromRemote.vatPercent) && !fromApi(fromLocal.vatChargePercent)) {
     next.vatChargePercent = DEFAULT_LOCAL_PRICE.vatChargePercent;
   }
@@ -362,8 +366,8 @@ export function calcPriceByTemplate(tpl, input = {}) {
   return kind === "cross_border" ? calcCrossBorderPrice(tpl, input) : calcMainlandPrice(tpl, input);
 }
 
-function skuWeightOf(sku, packageWeight, weightSource) {
-  if (normalizeWeightSource(weightSource) === "sku") {
+function skuWeightOf(sku, packageWeight, tpl) {
+  if (weightRefTypeOf(tpl) === "sku") {
     const w = num(sku?.weight);
     if (w == null) throw new Error("SKU 没有 weight");
     return w;
@@ -373,9 +377,22 @@ function skuWeightOf(sku, packageWeight, weightSource) {
   return w;
 }
 
+const MIN_SITE_PRICE = 35;
+
+export function cnyToSiteAmount(cny, site, fxRates) {
+  const currency = currencyOfSite(site);
+  const rate = Number(fxRates?.[currency]);
+  if (!Number.isFinite(rate) || rate <= 0) throw new Error(`没有 ${currency} 汇率，无法换算售价`);
+  let local = Number((Number(cny) * rate).toFixed(2));
+  const raised = local < MIN_SITE_PRICE;
+  if (raised) local = MIN_SITE_PRICE;
+  return { local, currency, rate, raised };
+}
+
 /**
- * 货源 originPrice = 成本；模板算出原价写入 sku.price（税前售价）。
- * 重量：skuMap.weight 为 SKU 重，最外层 weight 为包裹重；长宽高取 packageLength/Width/Height。
+ * 货源 originPrice = 成本（CNY）。算出折前价后按店铺站点汇率转当地货币：
+ * 跨境写 sku.priceIncludeVat，本土写 sku.price。当地价低于 35 则写成 35。
+ * 重量：weightRefType=sku 用 skuMap.weight；spu 用最外层 weight。
  */
 export function applySkuPricesFromTemplate(info, tpl, ctx = {}) {
   if (!tpl) throw new Error("没有定价模板，无法计算售价");
@@ -387,29 +404,37 @@ export function applySkuPricesFromTemplate(info, tpl, ctx = {}) {
   const L = num(next.packageLength);
   const W = num(next.packageWidth);
   const H = num(next.packageHeight);
+  const kind = ctx.kind === "cross_border" ? "cross_border" : "mainland";
+  const field = kind === "cross_border" ? "priceIncludeVat" : "price";
   const rows = [];
   for (const [key, sku] of Object.entries(skuMap)) {
     if (!sku || typeof sku !== "object") continue;
     const cost = num(sku.originPrice);
     if (cost == null) throw new Error(`SKU ${key} 没有 originPrice 成本`);
-    const wReal = skuWeightOf(sku, next.weight, tpl.weightSource);
+    const wReal = skuWeightOf(sku, next.weight, tpl);
     const result = calcPriceByTemplate(tpl, {
       cost,
       wReal,
       L,
       W,
       H,
-      kind: ctx.kind,
+      kind,
       freightTable: ctx.freightTable,
       fxRates: ctx.fxRates,
     });
-    sku.price = result.priceOriginal;
+    const converted = cnyToSiteAmount(result.priceOriginal, ctx.site, ctx.fxRates);
+    if (kind === "cross_border") sku.priceIncludeVat = converted.local;
+    else sku.price = converted.local;
     rows.push({
       key,
       cost,
       wReal,
       price: result.priceOriginal,
       after: result.priceAfterDiscount,
+      field,
+      sitePrice: converted.local,
+      currency: converted.currency,
+      raised: converted.raised,
     });
   }
   if (!rows.length) throw new Error("skuMap 没有可定价的 SKU");

@@ -88,7 +88,7 @@ function fieldsFromItem(item = {}) {
     continuedWeightCharge: item.continuedWeightCharge ?? "",
     continuedWeightInterval: item.continuedWeightInterval ?? "",
     logisticsCharge: item.logisticsCharge ?? "",
-    weightSource: item.weightSource === "sku" ? "sku" : "package",
+    weightRefType: item.weightRefType === "sku" || item.weightSource === "sku" ? "sku" : "spu",
     buyerLogisticCharge: item.buyerLogisticCharge ?? "",
     hasSellerLogisticCharge: item.hasSellerLogisticCharge === 1 || item.hasSellerLogisticCharge === "1" ? 1 : 0,
     sellerLogisticCharge: item.sellerLogisticCharge ?? "",
@@ -152,6 +152,7 @@ export default function PricingSetup({ item, onSaved, notify }) {
     siteType: isCrossBorder ? "cross_border" : "mainland",
     siteTypeLabel: isCrossBorder ? "跨境" : "本土",
     logisticsComputeType: logisticsType,
+    weightRefType: local.weightRefType === "sku" ? "sku" : "spu",
   }), [item, local, isCrossBorder, logisticsType]);
   const nameLen = String(local.name || "").length;
 
@@ -215,6 +216,9 @@ export default function PricingSetup({ item, onSaved, notify }) {
   }
 
   const fees = result?.fees;
+  const pretax = result && fees
+    ? Number(result.priceAfterDiscount) - Number(fees.tariff || 0) - Number(fees.vat || 0) - Number(isCrossBorder ? fees.firstMile || 0 : 0)
+    : null;
 
   return (
     <div className="content ms-page">
@@ -348,11 +352,11 @@ export default function PricingSetup({ item, onSaved, notify }) {
           )}
           <Field label="重量取值" className="ms-choice">
             <div className="ms-radios">
-              <label className={local.weightSource !== "sku" ? "on" : ""}>
-                <input type="radio" name="weightSource" checked={local.weightSource !== "sku"} onChange={() => patchLocal("weightSource", "package")} /> 产品包裹重量
+              <label className={local.weightRefType !== "sku" ? "on" : ""}>
+                <input type="radio" name="weightRefType" checked={local.weightRefType !== "sku"} onChange={() => patchLocal("weightRefType", "spu")} /> 产品包裹重量
               </label>
-              <label className={local.weightSource === "sku" ? "on" : ""}>
-                <input type="radio" name="weightSource" checked={local.weightSource === "sku"} onChange={() => patchLocal("weightSource", "sku")} /> SKU重量
+              <label className={local.weightRefType === "sku" ? "on" : ""}>
+                <input type="radio" name="weightRefType" checked={local.weightRefType === "sku"} onChange={() => patchLocal("weightRefType", "sku")} /> SKU重量
               </label>
             </div>
           </Field>
@@ -421,7 +425,7 @@ export default function PricingSetup({ item, onSaved, notify }) {
               <div className="ms-suffix"><input type="number" step="0.01" value={cost} onChange={(e) => setCost(e.target.value)} /><span>CNY</span></div>
             </Field>
             {needWeight ? (
-              <Field label={local.weightSource === "sku" ? "SKU重量" : "产品包裹重量"} required>
+              <Field label={local.weightRefType === "sku" ? "SKU重量" : "产品包裹重量"} required>
                 <div className="ms-suffix"><input type="number" step="0.001" value={wReal} onChange={(e) => setWReal(e.target.value)} /><span>KG</span></div>
               </Field>
             ) : null}
@@ -444,6 +448,7 @@ export default function PricingSetup({ item, onSaved, notify }) {
             {error ? <div className="callout" style={{ margin: "10px 16px 0" }}>{error}</div> : null}
 
             <div className="ms-trial-sec">计算结果</div>
+            <div className="ms-line"><span>税前价格</span><b className={pretax != null ? "hot" : ""}>{pretax != null ? moneyPair(pretax, fx) : "—"}</b></div>
             <div className="ms-line"><span>产品售价(原价)</span><b className={result ? "hot" : ""}>{result ? moneyPair(result.priceOriginal, fx) : "—"}</b></div>
             <div className="ms-line"><span>产品售价(折后)</span><b className={result ? "hot" : ""}>{result ? moneyPair(result.priceAfterDiscount, fx) : "—"}</b></div>
             <div className="ms-line"><span>利润</span><b className={result ? "hot" : ""}>{result ? moneyPair(result.profit, fx) : "—"}</b></div>

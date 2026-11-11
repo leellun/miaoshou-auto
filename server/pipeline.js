@@ -9,7 +9,7 @@ import { applyDefaultWeight, applyDetailHeader, applyImgUrls, applyPackageDimens
 import { ossConfigured, uploadGeneratedImages } from "./oss.js";
 import { now, readStore, writeStore } from "./store.js";
 import { applySkuPricesFromTemplate, mergePriceTemplate, priceKindOfShop } from "./tiktok-th-price.js";
-import { currencyOfSite, normalizeFxRates } from "./fx-rates.js";
+import { normalizeFxRates } from "./fx-rates.js";
 import { normalizeFreightTable } from "./freight-table.js";
 import { addTask, getTask, patchTask } from "./tasks.js";
 import { appendTaskLog } from "./task-log.js";
@@ -238,153 +238,153 @@ async function fillTiktokShopAfterClaim(opts) {
         throw new Error("详情 cid 分类没有值，已终止后续处理");
       }
       onPhase?.(1);
-      // if (aiTitle !== false) {
-      //   const originalTitle = pickOriginalTitle(shopCollectItemInfo);
-      //   if (originalTitle) {
-      //     try {
-      //       if (taskId) appendLog(taskId, "info", `调用 OpenAI pipeline.title 优化标题 · ${shop.site || "TH"}`, originalTitle);
-      //       const optimized = await optimizeTitleWithApi(originalTitle, shop.site || "TH");
-      //       shopCollectItemInfo = applyOptimizedTitle(shopCollectItemInfo, optimized);
-      //       if (taskId) appendLog(taskId, "info", `标题已优化：${originalTitle} → ${optimized}`);
-      //     } catch (error) {
-      //       if (taskId) appendLog(taskId, "error", `标题优化失败，已终止：${error.message}`, error.detail || "");
-      //       throw error;
-      //     }
-      //   } else if (taskId) {
-      //     appendLog(taskId, "warn", `详情里没有标题字段，跳过标题优化 · ${shop.name}`);
-      //   }
-      // }
-      // onPhase?.(2);
-      // let imageDir = "";
-      // let generatedDir = "";
-      // try {
-      //   const downloaded = await downloadDetailImages(shopCollectItemInfo);
-      //   imageDir = downloaded.dir;
-      //   if (taskId) appendLog(taskId, "info", `详情图已下载 ${downloaded.files.length}/${downloaded.urls.length} 张到 ${downloaded.dir}`);
-      //   if (downloaded.files.length) {
-      //     if (taskId) appendLog(taskId, "info", `详情：extract-plan → 拼图 → 分析生图 · 原图 ${downloaded.files.length} 张`);
-      //     const flow = await runOpenAIDetailFlow({
-      //       files: downloaded.files,
-      //       urls: downloaded.urls,
-      //       site: shop.site || "TH",
-      //       productId: String(detailId),
-      //       onLog: (message, extra) => appendLog(taskId, "info", message, extra),
-      //     });
-      //     if (taskId) appendLog(taskId, "info", `详情套图已生成 ${flow.files.length} 张`);
-      //     generatedDir = flow.dir;
-      //     if (!ossConfigured()) {
-      //       if (taskId) appendLog(taskId, "warn", "未配置 OSS，本次不替换详情图地址");
-      //     } else {
-      //       if (taskId) appendLog(taskId, "info", "开始上传详情图到阿里云 OSS");
-      //       const imageUrls = await uploadGeneratedImages(flow.files, { detailId, shopId: shop.id });
-      //       if (taskId) {
-      //         for (const url of imageUrls) appendLog(taskId, "info", `OSS 图片 ${url}`);
-      //       }
-      //       const blocks = imageUrls.map((url, index) => ({
-      //         url,
-      //         text: flow.pages?.[index]?.productDetails || "",
-      //       }));
-      //       shopCollectItemInfo = applyDetailHeader(shopCollectItemInfo, assembleInterleavedNotes(blocks));
-      //     }
-      //   } else if (taskId) {
-      //     appendLog(taskId, "warn", `没有可用详情图，跳过详情套图 · ${shop.name}`);
-      //   }
-      // } catch (error) {
-      //   if (taskId) appendLog(taskId, "error", `详情套图生成失败，已终止：${error.message}`, error.detail || "");
-      //   throw error;
-      // } finally {
-      //   removeDir(imageDir);
-      //   removeDir(generatedDir);
-      // }
-      // let mainDir = "";
-      // let mainGeneratedDir = "";
-      // try {
-      //   const mainUrls = collectMainImageUrls(shopCollectItemInfo);
-      //   if (!mainUrls.length) {
-      //     if (taskId) appendLog(taskId, "info", "imgUrls 为空，跳过商品图转化");
-      //   } else {
-      //     const downloadedMain = await downloadImagesByUrls(mainUrls, { prefix: "miaoshou-main-", unique: false });
-      //     mainDir = downloadedMain.dir;
-      //     if (taskId) appendLog(taskId, "info", `商品图已下载 ${downloadedMain.files.length}/${mainUrls.length} 张到 ${downloadedMain.dir}`);
-      //     if (!downloadedMain.files.length) {
-      //       if (taskId) appendLog(taskId, "warn", "商品图下载失败，跳过转化");
-      //     } else {
-      //       let generatedMain;
-      //       if (taskId) appendLog(taskId, "info", `主图：analyze → image2 · ${downloadedMain.files.length} 张（第一张白底无字）`);
-      //       generatedMain = await runProductImageFlow({
-      //         files: downloadedMain.files,
-      //         urls: downloadedMain.urls,
-      //         site: shop.site || "TH",
-      //         imageKind: "main",
-      //         onLog: (message, extra) => appendLog(taskId, "info", message, extra),
-      //       });
-      //       mainGeneratedDir = generatedMain.dir;
-      //       if (taskId) appendLog(taskId, "info", `商品新图已生成 ${generatedMain.files.length} 张到 ${generatedMain.dir}`, generatedMain.log?.slice(0, 400));
-      //       if (!ossConfigured()) {
-      //         if (taskId) appendLog(taskId, "warn", "未配置 OSS，本次不替换 imgUrls");
-      //       } else {
-      //         const mainOssUrls = await uploadGeneratedImages(generatedMain.files, { detailId, shopId: shop.id, kind: "main" });
-      //         shopCollectItemInfo = applyImgUrls(shopCollectItemInfo, mainOssUrls);
-      //         if (taskId) {
-      //           appendLog(taskId, "info", `已替换 imgUrls ${mainOssUrls.length} 张`);
-      //           for (const url of mainOssUrls) appendLog(taskId, "info", `商品图 OSS ${url}`);
-      //         }
-      //       }
-      //     }
-      //   }
-      // } catch (error) {
-      //   if (taskId) appendLog(taskId, "error", `商品图转化失败，已终止：${error.message}`, error.detail || "");
-      //   throw error;
-      // } finally {
-      //   removeDir(mainDir);
-      //   removeDir(mainGeneratedDir);
-      // }
-      // let skuDir = "";
-      // let skuGeneratedDir = "";
-      // try {
-      //   const skuUrls = collectSkuImageUrls(shopCollectItemInfo);
-      //   if (!skuUrls.length) {
-      //     if (taskId) appendLog(taskId, "info", "没有 SKU 图，跳过 SKU 转化");
-      //   } else {
-      //     const downloadedSku = await downloadImagesByUrls(skuUrls, { prefix: "miaoshou-sku-" });
-      //     skuDir = downloadedSku.dir;
-      //     if (taskId) appendLog(taskId, "info", `SKU 图已下载 ${downloadedSku.files.length}/${skuUrls.length} 张到 ${downloadedSku.dir}`);
-      //     if (!downloadedSku.files.length) {
-      //       if (taskId) appendLog(taskId, "warn", "SKU 图下载失败，跳过转化");
-      //     } else {
-      //       let generatedSku;
-      //       if (taskId) appendLog(taskId, "info", `SKU：analyze → image2 · ${downloadedSku.files.length} 张`);
-      //       generatedSku = await runProductImageFlow({
-      //         files: downloadedSku.files,
-      //         urls: downloadedSku.urls,
-      //         site: shop.site || "TH",
-      //         imageKind: "sku",
-      //         onLog: (message, extra) => appendLog(taskId, "info", message, extra),
-      //       });
-      //       skuGeneratedDir = generatedSku.dir;
-      //       if (taskId) appendLog(taskId, "info", `SKU 新图已生成 ${generatedSku.files.length} 张到 ${generatedSku.dir}`, generatedSku.log?.slice(0, 400));
-      //       if (!ossConfigured()) {
-      //         if (taskId) appendLog(taskId, "warn", "未配置 OSS，本次不替换 SKU 图地址");
-      //       } else {
-      //         const skuOssUrls = await uploadGeneratedImages(generatedSku.files, { detailId, shopId: shop.id, kind: "sku" });
-      //         const urlMap = new Map();
-      //         const count = Math.min(downloadedSku.urls.length, skuOssUrls.length);
-      //         for (let i = 0; i < count; i += 1) urlMap.set(downloadedSku.urls[i], skuOssUrls[i]);
-      //         shopCollectItemInfo = applySkuImageUrlMap(shopCollectItemInfo, urlMap);
-      //         if (taskId) {
-      //           appendLog(taskId, "info", `已替换 ${urlMap.size} 张 SKU 图地址`);
-      //           for (const url of skuOssUrls) appendLog(taskId, "info", `SKU OSS ${url}`);
-      //         }
-      //       }
-      //     }
-      //   }
-      // } catch (error) {
-      //   if (taskId) appendLog(taskId, "error", `SKU 图转化失败，已终止：${error.message}`, error.detail || "");
-      //   throw error;
-      // } finally {
-      //   removeDir(skuDir);
-      //   removeDir(skuGeneratedDir);
-      // }
+      if (aiTitle !== false) {
+        const originalTitle = pickOriginalTitle(shopCollectItemInfo);
+        if (originalTitle) {
+          try {
+            if (taskId) appendLog(taskId, "info", `调用 OpenAI pipeline.title 优化标题 · ${shop.site || "TH"}`, originalTitle);
+            const optimized = await optimizeTitleWithApi(originalTitle, shop.site || "TH");
+            shopCollectItemInfo = applyOptimizedTitle(shopCollectItemInfo, optimized);
+            if (taskId) appendLog(taskId, "info", `标题已优化：${originalTitle} → ${optimized}`);
+          } catch (error) {
+            if (taskId) appendLog(taskId, "error", `标题优化失败，已终止：${error.message}`, error.detail || "");
+            throw error;
+          }
+        } else if (taskId) {
+          appendLog(taskId, "warn", `详情里没有标题字段，跳过标题优化 · ${shop.name}`);
+        }
+      }
+      onPhase?.(2);
+      let imageDir = "";
+      let generatedDir = "";
+      try {
+        const downloaded = await downloadDetailImages(shopCollectItemInfo);
+        imageDir = downloaded.dir;
+        if (taskId) appendLog(taskId, "info", `详情图已下载 ${downloaded.files.length}/${downloaded.urls.length} 张到 ${downloaded.dir}`);
+        if (downloaded.files.length) {
+          if (taskId) appendLog(taskId, "info", `详情：extract-plan → 拼图 → 分析生图 · 原图 ${downloaded.files.length} 张`);
+          const flow = await runOpenAIDetailFlow({
+            files: downloaded.files,
+            urls: downloaded.urls,
+            site: shop.site || "TH",
+            productId: String(detailId),
+            onLog: (message, extra) => appendLog(taskId, "info", message, extra),
+          });
+          if (taskId) appendLog(taskId, "info", `详情套图已生成 ${flow.files.length} 张`);
+          generatedDir = flow.dir;
+          if (!ossConfigured()) {
+            if (taskId) appendLog(taskId, "warn", "未配置 OSS，本次不替换详情图地址");
+          } else {
+            if (taskId) appendLog(taskId, "info", "开始上传详情图到阿里云 OSS");
+            const imageUrls = await uploadGeneratedImages(flow.files, { detailId, shopId: shop.id });
+            if (taskId) {
+              for (const url of imageUrls) appendLog(taskId, "info", `OSS 图片 ${url}`);
+            }
+            const blocks = imageUrls.map((url, index) => ({
+              url,
+              text: flow.pages?.[index]?.productDetails || "",
+            }));
+            shopCollectItemInfo = applyDetailHeader(shopCollectItemInfo, assembleInterleavedNotes(blocks));
+          }
+        } else if (taskId) {
+          appendLog(taskId, "warn", `没有可用详情图，跳过详情套图 · ${shop.name}`);
+        }
+      } catch (error) {
+        if (taskId) appendLog(taskId, "error", `详情套图生成失败，已终止：${error.message}`, error.detail || "");
+        throw error;
+      } finally {
+        removeDir(imageDir);
+        removeDir(generatedDir);
+      }
+      let mainDir = "";
+      let mainGeneratedDir = "";
+      try {
+        const mainUrls = collectMainImageUrls(shopCollectItemInfo);
+        if (!mainUrls.length) {
+          if (taskId) appendLog(taskId, "info", "imgUrls 为空，跳过商品图转化");
+        } else {
+          const downloadedMain = await downloadImagesByUrls(mainUrls, { prefix: "miaoshou-main-", unique: false });
+          mainDir = downloadedMain.dir;
+          if (taskId) appendLog(taskId, "info", `商品图已下载 ${downloadedMain.files.length}/${mainUrls.length} 张到 ${downloadedMain.dir}`);
+          if (!downloadedMain.files.length) {
+            if (taskId) appendLog(taskId, "warn", "商品图下载失败，跳过转化");
+          } else {
+            let generatedMain;
+            if (taskId) appendLog(taskId, "info", `主图：analyze → image2 · ${downloadedMain.files.length} 张（第一张白底无字）`);
+            generatedMain = await runProductImageFlow({
+              files: downloadedMain.files,
+              urls: downloadedMain.urls,
+              site: shop.site || "TH",
+              imageKind: "main",
+              onLog: (message, extra) => appendLog(taskId, "info", message, extra),
+            });
+            mainGeneratedDir = generatedMain.dir;
+            if (taskId) appendLog(taskId, "info", `商品新图已生成 ${generatedMain.files.length} 张到 ${generatedMain.dir}`, generatedMain.log?.slice(0, 400));
+            if (!ossConfigured()) {
+              if (taskId) appendLog(taskId, "warn", "未配置 OSS，本次不替换 imgUrls");
+            } else {
+              const mainOssUrls = await uploadGeneratedImages(generatedMain.files, { detailId, shopId: shop.id, kind: "main" });
+              shopCollectItemInfo = applyImgUrls(shopCollectItemInfo, mainOssUrls);
+              if (taskId) {
+                appendLog(taskId, "info", `已替换 imgUrls ${mainOssUrls.length} 张`);
+                for (const url of mainOssUrls) appendLog(taskId, "info", `商品图 OSS ${url}`);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        if (taskId) appendLog(taskId, "error", `商品图转化失败，已终止：${error.message}`, error.detail || "");
+        throw error;
+      } finally {
+        removeDir(mainDir);
+        removeDir(mainGeneratedDir);
+      }
+      let skuDir = "";
+      let skuGeneratedDir = "";
+      try {
+        const skuUrls = collectSkuImageUrls(shopCollectItemInfo);
+        if (!skuUrls.length) {
+          if (taskId) appendLog(taskId, "info", "没有 SKU 图，跳过 SKU 转化");
+        } else {
+          const downloadedSku = await downloadImagesByUrls(skuUrls, { prefix: "miaoshou-sku-" });
+          skuDir = downloadedSku.dir;
+          if (taskId) appendLog(taskId, "info", `SKU 图已下载 ${downloadedSku.files.length}/${skuUrls.length} 张到 ${downloadedSku.dir}`);
+          if (!downloadedSku.files.length) {
+            if (taskId) appendLog(taskId, "warn", "SKU 图下载失败，跳过转化");
+          } else {
+            let generatedSku;
+            if (taskId) appendLog(taskId, "info", `SKU：analyze → image2 · ${downloadedSku.files.length} 张`);
+            generatedSku = await runProductImageFlow({
+              files: downloadedSku.files,
+              urls: downloadedSku.urls,
+              site: shop.site || "TH",
+              imageKind: "sku",
+              onLog: (message, extra) => appendLog(taskId, "info", message, extra),
+            });
+            skuGeneratedDir = generatedSku.dir;
+            if (taskId) appendLog(taskId, "info", `SKU 新图已生成 ${generatedSku.files.length} 张到 ${generatedSku.dir}`, generatedSku.log?.slice(0, 400));
+            if (!ossConfigured()) {
+              if (taskId) appendLog(taskId, "warn", "未配置 OSS，本次不替换 SKU 图地址");
+            } else {
+              const skuOssUrls = await uploadGeneratedImages(generatedSku.files, { detailId, shopId: shop.id, kind: "sku" });
+              const urlMap = new Map();
+              const count = Math.min(downloadedSku.urls.length, skuOssUrls.length);
+              for (let i = 0; i < count; i += 1) urlMap.set(downloadedSku.urls[i], skuOssUrls[i]);
+              shopCollectItemInfo = applySkuImageUrlMap(shopCollectItemInfo, urlMap);
+              if (taskId) {
+                appendLog(taskId, "info", `已替换 ${urlMap.size} 张 SKU 图地址`);
+                for (const url of skuOssUrls) appendLog(taskId, "info", `SKU OSS ${url}`);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        if (taskId) appendLog(taskId, "error", `SKU 图转化失败，已终止：${error.message}`, error.detail || "");
+        throw error;
+      } finally {
+        removeDir(skuDir);
+        removeDir(skuGeneratedDir);
+      }
       onPhase?.(3);
       shopCollectItemInfo = applyPackageDimensions(shopCollectItemInfo);
       shopCollectItemInfo = applyDefaultWeight(shopCollectItemInfo);
@@ -403,13 +403,18 @@ async function fillTiktokShopAfterClaim(opts) {
         let toSave = applyPriceTemplateId(structuredClone(shopCollectItemInfo), templateId);
         const tpl = resolveLocalPriceTemplate(templateId);
         const kind = priceKindOfShop(target) || priceKindOfShop(shop) || (tpl.siteType === "cross_border" ? "cross_border" : "mainland");
-        const priced = applySkuPricesFromTemplate(toSave, tpl, { kind, freightTable, fxRates });
-        toSave = ensureMinSkuPriceCny(priced.info, target.site || shop.site || siteCode, fxRates, taskId);
+        const priced = applySkuPricesFromTemplate(toSave, tpl, {
+          kind,
+          freightTable,
+          fxRates,
+          site: target.site || shop.site || siteCode,
+        });
+        toSave = priced.info;
         if (taskId) {
           appendLog(taskId, "info", `${target.name || shop.name} ${kind === "cross_border" ? "跨境" : "本土"} · 本地定价模板 ${tpl.name || templateId}`);
           for (const row of priced.rows) {
-            const sku = toSave.skuMap?.[row.key];
-            appendLog(taskId, "info", `SKU ${row.key} 成本 originPrice ${row.cost} · 计费重 ${row.wReal} → 税前售价 ${sku?.price ?? row.price}（折后 ${row.after}）`);
+            const bump = row.raised ? `，不足 35 已改为 35 ${row.currency}` : "";
+            appendLog(taskId, "info", `SKU ${row.key} 成本 originPrice ${row.cost} CNY · 计费重 ${row.wReal} → ${row.field} ${row.sitePrice} ${row.currency}（折前 ${row.price} CNY / 折后 ${row.after} CNY）${bump}`);
           }
         }
         const savedPath = saveShopCollectToTxt({
@@ -418,6 +423,7 @@ async function fillTiktokShopAfterClaim(opts) {
           shopCollectItemInfo: toSave,
         });
         if (taskId) appendLog(taskId, "info", `详情已保存到本地文件 ${savedPath}`);
+        console.log(toSave)
         if (target.id) {
           if (taskId) {
             appendLog(taskId, "info", `调用 save_shop_collect_item_info · ${target.name}`, {
@@ -425,13 +431,13 @@ async function fillTiktokShopAfterClaim(opts) {
               body: { detailId: Number(detailId), shopId: Number(target.id) },
             });
           }
-          // const saved = await saveTiktokShopDetail(settings, {
-          //   detailId,
-          //   shopId: target.id,
-          //   shopCollectItemInfo: toSave,
-          //   ossMd5,
-          // });
-          // if (taskId) appendLog(taskId, "info", `save_shop_collect_item_info 返回 · ${target.name}`, saved);
+          const saved = await saveTiktokShopDetail(settings, {
+            detailId,
+            shopId: target.id,
+            shopCollectItemInfo: toSave,
+            ossMd5,
+          });
+          if (taskId) appendLog(taskId, "info", `save_shop_collect_item_info 返回 · ${target.name}`, saved);
         } else {
           if (taskId) {
             appendLog(taskId, "info", `调用 save_site_collect_item_info · ${siteCode}`, {
@@ -439,13 +445,13 @@ async function fillTiktokShopAfterClaim(opts) {
               body: { detailId: Number(detailId), site: siteCode },
             });
           }
-          // const saved = await saveTiktokSiteDetail(settings, {
-          //   detailId,
-          //   site: siteCode,
-          //   shopCollectItemInfo: toSave,
-          //   ossMd5,
-          // });
-          // if (taskId) appendLog(taskId, "info", `save_site_collect_item_info 返回 · ${siteCode}`, saved);
+          const saved = await saveTiktokSiteDetail(settings, {
+            detailId,
+            site: siteCode,
+            shopCollectItemInfo: toSave,
+            ossMd5,
+          });
+          if (taskId) appendLog(taskId, "info", `save_site_collect_item_info 返回 · ${siteCode}`, saved);
         }
       }
     } catch (error) {
@@ -603,28 +609,6 @@ async function waitWithLogs(taskId, ms, reason) {
     }
   }
   appendLog(taskId, "info", `等待结束，实际过去 ${Date.now() - started} 毫秒`);
-}
-
-const MIN_SITE_PRICE = 35;
-
-function ensureMinSkuPriceCny(info, site, fxRates, taskId) {
-  const currency = currencyOfSite(site);
-  const rate = Number(fxRates?.[currency]);
-  if (!Number.isFinite(rate) || rate <= 0) throw new Error(`没有 ${currency} 汇率，无法校验售价`);
-  const minCny = Number((MIN_SITE_PRICE / rate).toFixed(2));
-  const skuMap = info.skuMap || {};
-  for (const [key, sku] of Object.entries(skuMap)) {
-    if (!sku || typeof sku !== "object") continue;
-    const cny = Number(sku.price);
-    if (!Number.isFinite(cny)) continue;
-    const local = cny * rate;
-    if (local >= MIN_SITE_PRICE) continue;
-    sku.price = minCny;
-    if (taskId) {
-      appendLog(taskId, "info", `SKU ${key} 站点价 ${local.toFixed(2)} ${currency} < ${MIN_SITE_PRICE}，税前售价改为 ${MIN_SITE_PRICE} ${currency} = ${minCny} CNY`);
-    }
-  }
-  return info;
 }
 
 function resolveLocalPriceTemplate(pricingId) {

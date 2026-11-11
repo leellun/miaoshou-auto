@@ -601,41 +601,22 @@ export async function getCachedPriceTemplateList(settings, opts = {}) {
     return { items: hit.items, fromCache: true };
   }
   const remote = await getPriceTemplateList(settings, query);
+  console.log(`items template：${JSON.stringify(remote)}`)
   const items = mapPriceTemplates(remote);
   priceTemplateListCache.set(key, { items, fetchedAt: Date.now() });
-  console.log(`items template：${JSON.stringify(items)}`)
   return { items, fromCache: false };
-}
-
-function pickFirst(...values) {
-  for (const value of values) {
-    if (value != null && value !== "") return value;
-  }
-  return undefined;
 }
 
 export function mapPriceTemplates(remote) {
   const list = remote?.priceTemplateList || remote?.list || remote?.records || (Array.isArray(remote) ? remote : []);
   return list.map((item, index) => {
-    const out = {};
-    for (const [key, value] of Object.entries(item || {})) {
-      if (value == null || value === "") continue;
-      out[key] = value;
-    }
-    const siteType = inferPriceSiteType(out);
-    out.id = String(item.priceTemplateId ?? item.id ?? item.templateId ?? `tpl-${index}`);
-    out.name = item.name || item.templateName || `定价模板 ${index + 1}`;
-    if (!out.platform) out.platform = "tiktok";
-    out.siteType = siteType;
+    item.id=item.priceTemplateId
+    if (!item.platform) item.platform = "tiktok";
+    const siteType = inferPriceSiteType(item);
     if (siteType === "cross_border" || siteType === "mainland") {
-      out.siteTypeLabel = siteType === "cross_border" ? "跨境" : "本土";
+      item.siteTypeLabel = siteType === "cross_border" ? "跨境" : "本土";
     }
-    const vat = pickFirst(out.vatChargePercent, item.vatPercent);
-    if (vat != null) out.vatChargePercent = vat;
-    const tariff = pickFirst(out.tariffChargePercent, item.tariffPercent);
-    if (tariff != null) out.tariffChargePercent = tariff;
-    if (item.weightSource === "sku" || item.weightSource === "package") out.weightSource = item.weightSource;
-    return out;
+    return item
   });
 }
 
