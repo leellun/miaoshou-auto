@@ -24,7 +24,7 @@ import {
 const MIN_PAGES = 3;
 const MAX_PAGES = 10;
 const MAX_COMPOSE_SIDE = 1536;
-const MAX_COMPOSE_WIDTH = 1536;
+const MAX_COMPOSE_WIDTH = 1024;
 
 function log(onLog, message, extra) {
   onLog?.(message, extra);
@@ -323,17 +323,20 @@ function pagesFromExtraction(list, parsed, images) {
   }).filter(Boolean);
 }
 
-async function extractionPlan({ sources, productId, site, onLog }) {
+async function extractionPlan({ sources, productId, site, onLog, params = {} }) {
   const list = (sources || []).slice(0, MAX_DETAIL_IMAGES);
   if (!list.length) throw new Error("没有可分析的详情图");
   const code = String(site || "TH").toUpperCase();
   const market = marketLanguage(site);
   const product = productId || "sku_001";
+  const platform = String(params.platform || "").trim() || "TikTok Shop";
+  const country = String(params.country || "").trim() || marketName(site);
+  const language = String(params.language || "").trim() || market.label;
   const user = EXTRACTION_PLAN_USER_PROMPT
     .replaceAll("{product_id}", product)
-    .replaceAll("{platform}", "TikTok Shop")
-    .replaceAll("{market}", marketName(site))
-    .replaceAll("{language}", market.label)
+    .replaceAll("{platform}", platform)
+    .replaceAll("{market}", country)
+    .replaceAll("{language}", language)
     .replaceAll("{page_count}", `不固定，按有效信息决定，约 ${MIN_PAGES}–${MAX_PAGES} 页`);
   const content = [{ type: "input_text", text: user }];
   for (const source of list) {
@@ -354,7 +357,7 @@ async function extractionPlan({ sources, productId, site, onLog }) {
     });
   }
   if (content.length < 3) throw new Error("详情图无法编码为 OpenAI 图像输入");
-  log(onLog, `extract-plan：整组提取并规划详情页 ${list.length} 张 · TikTok ${code}`);
+  log(onLog, `extract-plan：整组提取并规划详情页 ${list.length} 张 · ${platform} ${country}`);
   const result = await createOpenAIResponse({
     input: [
       { role: "system", content: [{ type: "input_text", text: EXTRACTION_PLAN_SYSTEM_PROMPT }] },
@@ -378,7 +381,7 @@ async function extractionPlan({ sources, productId, site, onLog }) {
     product_id: extract.product_id,
     market: code,
     language: market.language,
-    aspect_ratio: "1:1",
+    aspect_ratio: String(params.aspect_ratio || "").trim() || "1:1",
     image_count: pages.length,
     pages,
     image_tasks: Array.isArray(parsed.image_tasks) ? parsed.image_tasks : [],
@@ -422,6 +425,12 @@ function additionalCopyFromTexts(texts) {
   return uniqueLines(texts).join(";");
 }
 
+function hasProductAppearance(task) {
+  const value = task?.has_product_appearance;
+  if (value === false || value === 0 || value === "false" || value === "0") return false;
+  return true;
+}
+
 function pageRegions(page, tasks, sources) {
   const byName = sourceIndex(sources);
   const taskById = new Map();
@@ -430,9 +439,14 @@ function pageRegions(page, tasks, sources) {
     if (id) taskById.set(id, task);
   }
   const regions = [];
+  const skipped = [];
   for (const id of page.image_ids || []) {
     const task = taskById.get(String(id || "").trim());
     if (!task) throw new Error(`${page.id} 找不到 image_id ${id}`);
+    if (!hasProductAppearance(task)) {
+      skipped.push(id);
+      continue;
+    }
     const items = Array.isArray(task.source_regions) ? task.source_regions : [];
     if (!items.length) throw new Error(`${page.id} · ${id} 没有 source_regions`);
     for (const region of items) {
@@ -450,11 +464,15 @@ function pageRegions(page, tasks, sources) {
       });
     }
   }
-  if (regions.length) return regions;
+  if (regions.length) return { regions, skipped };
+  if (skipped.length) throw new Error(`${page.id} 引用的任务均无商品外观，无法拼接`);
   const fallbackName = String(page.reference_image || "").trim();
   const source = byName.get(lookupKey(fallbackName));
   if (!source?.file) throw new Error(`${page.id} 没有可拼接的 image_ids 或参考图`);
-  return [{ image_id: "", filename: source.filename, file: source.file, y: 0, height: 0 }];
+  return {
+    regions: [{ image_id: "", filename: source.filename, file: source.file, y: 0, height: 0 }],
+    skipped,
+  };
 }
 
 async function cropRegion(region) {
@@ -577,19 +595,29 @@ async function writeComposedImage(buffer, destPng) {
   return { composeFile: destPng, analyzeFile, editFile };
 }
 
-function detailImageParams(plan, additionalCopy = "") {
+function sizeForAspect(ratio) {
+  const value = String(ratio || "1:1");
+  if (["3:4", "4:5", "9:16"].includes(value)) return "1024x1536";
+  if (["4:3", "5:4", "16:9"].includes(value)) return "1536x1024";
+  return "";
+}
+
+function detailImageParams(plan, additionalCopy = "", overrides = {}) {
   const site = plan.market || "TH";
   const market = marketLanguage(site);
+  const imageType = String(overrides.image_type || "").trim();
+  const strength = String(overrides.redesign_strength || "").trim().toLowerCase();
+  const extra = [overrides.additional_copy, additionalCopy].map((item) => String(item || "").trim()).filter(Boolean);
   return {
-    platform: "TikTok Shop",
-    country: marketName(site),
-    language: market.label,
-    image_type: "with_text",
-    aspect_ratio: plan.aspect_ratio || "1:1",
-    excluded_copy: "",
-    additional_copy: additionalCopy,
-    redesign_strength: "high",
-    main_product: "auto",
+    platform: String(overrides.platform || "").trim() || "TikTok Shop",
+    country: String(overrides.country || "").trim() || marketName(site),
+    language: String(overrides.language || "").trim() || market.label,
+    image_type: ["with_text", "white_background", "no_text"].includes(imageType) ? imageType : "with_text",
+    aspect_ratio: String(overrides.aspect_ratio || plan.aspect_ratio || "").trim() || "1:1",
+    excluded_copy: String(overrides.excluded_copy || "").trim(),
+    additional_copy: extra.join("；"),
+    redesign_strength: ["low", "medium", "high"].includes(strength) ? strength : "high",
+    main_product: String(overrides.main_product || "").trim() || "auto",
   };
 }
 
@@ -659,8 +687,8 @@ function selectPages(plan, pageId = "") {
 }
 
 async function composePageImage(page, tasks, sources, destPng, onLog) {
-  const regions = pageRegions(page, tasks, sources);
-  log(onLog, `compose：${page.id} · ${regions.length} 段 · ${page.image_ids?.join("、") || page.reference_image}`);
+  const { regions, skipped } = pageRegions(page, tasks, sources);
+  log(onLog, `compose：${page.id} · ${regions.length} 段 · ${page.image_ids?.join("、") || page.reference_image}${skipped.length ? ` · 跳过无外观 ${skipped.join("、")}` : ""}`);
   const strips = [];
   for (const region of regions) {
     const cropped = await cropRegion(region);
@@ -695,7 +723,7 @@ export async function composeDetailImages({ plan, extract, files = [], urls = []
   return { dir, files: composed.map((item) => item.file), pages: composed };
 }
 
-async function generate({ plan, extract, sources, outputDir, onLog, pageId = "" }) {
+async function generate({ plan, extract, sources, outputDir, onLog, pageId = "", params: overrides = {} }) {
   const cfg = openaiConfig();
   fs.mkdirSync(outputDir, { recursive: true });
   const pages = selectPages(plan, pageId);
@@ -707,7 +735,7 @@ async function generate({ plan, extract, sources, outputDir, onLog, pageId = "" 
     const composeFile = path.join(outputDir, `${stem}.compose.png`);
     const { analyzeFile, editFile } = await composePageImage(page, tasks, sources, composeFile, onLog);
     const additionalCopy = additionalCopyFromTexts(page.texts || page.display_text);
-    const params = detailImageParams(plan, additionalCopy);
+    const params = detailImageParams(plan, additionalCopy, overrides);
     log(onLog, `generate-analyze：${page.id} · 拼图 ${path.basename(analyzeFile)}`, params);
     const analysis = await analyzeComposedImage(analyzeFile, params, `详情套图分析-${page.id}-responses`);
     log(onLog, `generate：${page.id} · image2 · ${path.basename(editFile)}`, analysis);
@@ -715,7 +743,7 @@ async function generate({ plan, extract, sources, outputDir, onLog, pageId = "" 
       const generated = await editImageWithReferences({
         prompt: analysis.image_edit_prompt,
         files: [editFile],
-        size: cfg.imageSize || "1024x1024",
+        size: sizeForAspect(params.aspect_ratio) || cfg.imageSize || "1024x1024",
         logLabel: `详情套图-${page.id}-images-edits`,
       });
       const dest = path.join(outputDir, `${stem}.png`);
@@ -745,12 +773,63 @@ async function generate({ plan, extract, sources, outputDir, onLog, pageId = "" 
   return { files, pages: pageResults };
 }
 
-export async function runOpenAIDetailFlow({ files = [], urls = [], site = "TH", productId = "", onLog } = {}) {
+export async function runDirectDetailImageFlow({ files = [], urls = [], site = "TH", params = {}, onLog } = {}) {
   const sources = mapSourceFiles(files, urls);
   if (!sources.length) throw new Error("没有可分析的详情图");
-  const { extract, plan: detailPlan } = await extractionPlan({ sources, productId, site, onLog });
+  const cfg = openaiConfig();
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "miaoshou-detail-direct-"));
+  fs.mkdirSync(outputDir, { recursive: true });
+  const analysisParams = detailImageParams({ market: site, aspect_ratio: params.aspect_ratio }, "", params);
+  const outFiles = [];
+  const pages = [];
+  for (let index = 0; index < sources.length; index += 1) {
+    const source = sources[index];
+    const stem = String(index + 1).padStart(2, "0");
+    const inputPng = path.join(outputDir, `${stem}.input.png`);
+    await fitImageFileMaxSide(source.file, inputPng, MAX_COMPOSE_SIDE);
+    const fitted = await resizeBuffer(fs.readFileSync(inputPng), { width: MAX_COMPOSE_WIDTH });
+    const prepared = await writeComposedImage(fitted, inputPng);
+    log(onLog, `detail-analyze：${index + 1}/${sources.length} ${source.filename}`, analysisParams);
+    const analysis = await analyzeComposedImage(prepared.analyzeFile, analysisParams, `详情分析-${source.filename}-responses`);
+    log(onLog, `detail-generate：${index + 1}/${sources.length} ${source.filename}`, analysis);
+    try {
+      const generated = await editImageWithReferences({
+        prompt: analysis.image_edit_prompt,
+        files: [prepared.editFile],
+        size: sizeForAspect(analysisParams.aspect_ratio) || cfg.imageSize || "1024x1024",
+        logLabel: `详情生图-${source.filename}-images-edits`,
+      });
+      const dest = path.join(outputDir, `${stem}.png`);
+      await saveGeneratedImage(generated, dest);
+      fs.writeFileSync(path.join(outputDir, `${stem}.prompt.txt`), `${analysis.image_edit_prompt}\n`, "utf8");
+      fs.writeFileSync(path.join(outputDir, `${stem}.analysis.json`), `${JSON.stringify({
+        filename: source.filename,
+        params: analysisParams,
+        ...analysis,
+      }, null, 2)}\n`, "utf8");
+      outFiles.push(dest);
+      pages.push({
+        page: source.filename,
+        file: dest,
+        productDetails: analysis.product_details || "",
+      });
+      log(onLog, `${source.filename} 已保存 ${dest}`);
+    } catch (error) {
+      log(onLog, `${source.filename} 生图失败：${error.message}`, error.detail || "");
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  if (!outFiles.length) throw new Error("没有生成任何详情图");
+  return { dir: outputDir, files: outFiles, pages };
+}
+
+export async function runOpenAIDetailFlow({ files = [], urls = [], site = "TH", productId = "", params = {}, onLog } = {}) {
+  const sources = mapSourceFiles(files, urls);
+  if (!sources.length) throw new Error("没有可分析的详情图");
+  const { extract, plan: detailPlan } = await extractionPlan({ sources, productId, site, onLog, params });
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "miaoshou-tkshop-api-"));
-  const generated = await generate({ plan: detailPlan, extract, sources, outputDir, onLog });
+  const generated = await generate({ plan: detailPlan, extract, sources, outputDir, onLog, params });
   return {
     extract,
     plan: detailPlan,
@@ -782,11 +861,11 @@ export async function planDetailImages({ files = [], urls = [], productId = "", 
   return plan;
 }
 
-export async function generateDetailImages({ plan, extract, files = [], urls = [], outputDir = "", pageId = "", onLog } = {}) {
+export async function generateDetailImages({ plan, extract, files = [], urls = [], outputDir = "", pageId = "", params = {}, onLog } = {}) {
   const sources = mapSourceFiles(files, urls);
   if (!sources.length) throw new Error("没有可生图的原图");
   if (!plan?.pages?.length) throw new Error("缺少 plan");
   const dir = outputDir || fs.mkdtempSync(path.join(os.tmpdir(), "miaoshou-tkshop-api-"));
-  const generated = await generate({ plan, extract, sources, outputDir: dir, onLog, pageId });
+  const generated = await generate({ plan, extract, sources, outputDir: dir, onLog, pageId, params });
   return { dir, files: generated.files, pages: generated.pages || [] };
 }

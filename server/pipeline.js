@@ -1,7 +1,7 @@
 import { extractSourceId, parseLinks, sourceFromUrl } from "./catalog.js";
 import { claimTiktokToShop, claimToPlatform, fetchItem, getCachedShopList, getCommonCollectBoxList, getCommonDetail, getTiktokShopDetail, getTiktokSiteDetail, mapCommonRow, mapTiktokCollectItems, peekShopListCache, pickCommonCollectBoxDetailId, pickSourceDetailMap, resolveDetailIdFromMap, resolveSettings, saveTiktokShopDetail, saveTiktokSiteDetail, searchTiktokCollectList } from "./miaoshou.js";
 import { hasOpenAIConfig, optimizeTitleWithApi } from "./openai-api.js";
-import { isOpenAIUsageLogActive, runWithOpenAIUsageLog } from "./openai-log.js";
+import { emptyOpenAIUsage, isOpenAIUsageLogActive, OPENAI_USAGE_FIELDS, runWithOpenAIUsageLog } from "./openai-log.js";
 import { runOpenAIDetailFlow } from "./detail-flow.js";
 import { runProductImageFlow } from "./product-image-flow.js";
 import { applyOptimizedTitle, pickOriginalTitle } from "./product-title.js";
@@ -137,28 +137,21 @@ function withTaskOpenAIUsage(taskId, fn) {
   if (!taskId || isOpenAIUsageLogActive()) return fn();
   return runWithOpenAIUsageLog((entry) => {
     const usage = entry?.usage || {};
-    const input = Number(usage.input_tokens || 0);
-    const output = Number(usage.output_tokens || 0);
-    const total = Number(usage.total_tokens || 0);
     const label = entry?.label || "openai";
-    appendLog(taskId, "info", `OpenAI usage · ${label} · input_tokens ${input} · output_tokens ${output} · total_tokens ${total}`);
+    const nums = {};
+    for (const [key] of OPENAI_USAGE_FIELDS) nums[key] = Number(usage[key] || 0);
+    appendLog(taskId, "info", `OpenAI usage · ${label} · ${OPENAI_USAGE_FIELDS.map(([key, name]) => `${name} ${nums[key]}`).join(" · ")}`);
     patchTask(taskId, (task) => {
-      const prev = task.openaiUsage || { input_tokens: 0, output_tokens: 0, total_tokens: 0, calls: [] };
-      return {
-        openaiUsage: {
-          input_tokens: prev.input_tokens + input,
-          output_tokens: prev.output_tokens + output,
-          total_tokens: prev.total_tokens + total,
-          calls: [...(prev.calls || []), {
-            t: now(),
-            label,
-            input_tokens: input,
-            output_tokens: output,
-            total_tokens: total,
-            elapsedMs: entry?.elapsedMs ?? null,
-          }].slice(-80),
-        },
-      };
+      const prev = task.openaiUsage || emptyOpenAIUsage();
+      const next = emptyOpenAIUsage();
+      for (const [key] of OPENAI_USAGE_FIELDS) next[key] = Number(prev[key] || 0) + nums[key];
+      next.calls = [...(prev.calls || []), {
+        t: now(),
+        label,
+        ...nums,
+        elapsedMs: entry?.elapsedMs ?? null,
+      }].slice(-80);
+      return { openaiUsage: next };
     });
   }, fn);
 }
@@ -681,7 +674,7 @@ export function createTask({ linksText, shopIds, shops: shopList = [], templateI
     claimPerPlatform: claimPerPlatform !== false,
     schedule: schedule || (autoPublish ? "now" : "manual"),
     steps: STEP_LABELS.map((label) => ({ label, state: "wait" })),
-    openaiUsage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, calls: [] },
+    openaiUsage: emptyOpenAIUsage(),
   });
 }
 
@@ -705,7 +698,7 @@ export function createOptimizeTask(ids = []) {
     itemIds,
     aiTitle: true,
     steps: OPTIMIZE_STEP_LABELS.map((label) => ({ label, state: "wait" })),
-    openaiUsage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, calls: [] },
+    openaiUsage: emptyOpenAIUsage(),
   });
 }
 
@@ -1123,7 +1116,7 @@ export function createClaimTask({ ids = [], shopIds = [], shops: shopList = [], 
     aiTitle: aiTitle !== false,
     schedule: schedule || (autoPublish ? "now" : "manual"),
     steps: STEP_LABELS.map((label, index) => ({ label, state: index < 2 ? "done" : "wait" })),
-    openaiUsage: { input_tokens: 0, output_tokens: 0, total_tokens: 0, calls: [] },
+    openaiUsage: emptyOpenAIUsage(),
   });
 }
 

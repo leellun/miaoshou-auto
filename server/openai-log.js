@@ -30,46 +30,55 @@ function dump(value) {
   return JSON.stringify(value, null, 2);
 }
 
-function parseMaybeJson(text) {
-  if (typeof text !== "string") return text;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
+function isDataUri(text) {
+  return /^data:/i.test(String(text || "").trim());
 }
 
-async function serializeFormData(form) {
-  const fields = [];
-  for (const [name, value] of form.entries()) {
-    if (typeof value === "string") {
-      fields.push({ name, value });
-      continue;
-    }
-    const buf = Buffer.from(await value.arrayBuffer());
-    fields.push({
-      name,
-      filename: value.name || "blob",
-      type: value.type || "",
-      size: buf.length,
-      base64: buf.toString("base64"),
-    });
+function collectPromptTexts(value, out) {
+  if (value == null) return;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (text && !isDataUri(text)) out.push(text);
+    return;
   }
-  return { type: "multipart/form-data", fields };
-}
-
-async function serializeBody(body) {
-  if (body == null) return null;
-  if (typeof body === "string") return parseMaybeJson(body);
-  if (typeof FormData !== "undefined" && body instanceof FormData) {
-    return serializeFormData(body);
+  if (Array.isArray(value)) {
+    for (const item of value) collectPromptTexts(item, out);
+    return;
   }
-  if (Buffer.isBuffer(body)) return { type: "buffer", base64: body.toString("base64") };
-  return body;
+  if (typeof value !== "object") return;
+  if (typeof value.prompt === "string") collectPromptTexts(value.prompt, out);
+  if (value.type === "input_text" || value.type === "text" || value.type === "output_text") {
+    collectPromptTexts(value.text, out);
+    return;
+  }
+  if (value.type === "input_image" || value.type === "image_url") return;
+  if (value.content != null) collectPromptTexts(value.content, out);
+  if (value.input != null) collectPromptTexts(value.input, out);
+  if (value.messages != null) collectPromptTexts(value.messages, out);
+  if (typeof value.text === "string" && value.format == null) collectPromptTexts(value.text, out);
 }
 
 export async function snapshotRequestBody(body) {
-  return serializeBody(body);
+  if (body == null) return "";
+  if (typeof FormData !== "undefined" && body instanceof FormData) {
+    const texts = [];
+    for (const [name, value] of body.entries()) {
+      if (name === "prompt" && typeof value === "string") texts.push(value);
+    }
+    return texts.join("\n\n");
+  }
+  let parsed = body;
+  if (typeof body === "string") {
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return isDataUri(body) ? "" : body;
+    }
+  }
+  if (Buffer.isBuffer(parsed)) return "";
+  const texts = [];
+  collectPromptTexts(parsed, texts);
+  return texts.join("\n\n");
 }
 
 export function runWithOpenAIUsageLog(logFn, fn) {
@@ -95,34 +104,78 @@ function emitOpenAIUsage({ label, usage, elapsedMs }) {
   }
 }
 
+function numToken(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+export const OPENAI_USAGE_FIELDS = [
+  ["input_tokens", "总输入 Token"],
+  ["output_tokens", "总输出 Token"],
+  ["total_tokens", "总 Token"],
+  ["input_text_tokens", "输入文本 Token"],
+  ["input_image_tokens", "输入图片 Token"],
+  ["output_text_tokens", "输出文本 Token"],
+  ["output_image_tokens", "输出图片 Token"],
+  ["cached_tokens", "缓存输入 Token"],
+  ["reasoning_tokens", "推理 Token"],
+];
+
+export function emptyOpenAIUsage() {
+  const usage = { calls: [] };
+  for (const [key] of OPENAI_USAGE_FIELDS) usage[key] = 0;
+  return usage;
+}
+
 export function extractOpenAIUsage(responseBody) {
   const body = responseBody && typeof responseBody === "object" ? responseBody : {};
   const raw = body.usage || body.response?.usage || {};
-  const input = Number(raw.input_tokens ?? raw.prompt_tokens ?? raw.inputTokens ?? 0);
-  const output = Number(raw.output_tokens ?? raw.completion_tokens ?? raw.outputTokens ?? 0);
-  const total = Number(raw.total_tokens ?? raw.totalTokens ?? (input + output));
+  const inDetails = raw.input_tokens_details || raw.prompt_tokens_details || {};
+  const outDetails = raw.output_tokens_details || raw.completion_tokens_details || {};
+  const input = numToken(raw.input_tokens ?? raw.prompt_tokens ?? raw.inputTokens);
+  const output = numToken(raw.output_tokens ?? raw.completion_tokens ?? raw.outputTokens);
+  const total = numToken(raw.total_tokens ?? raw.totalTokens ?? (input + output));
+  const cached = numToken(inDetails.cached_tokens ?? inDetails.cache_tokens ?? raw.cached_tokens);
+  const reasoning = numToken(outDetails.reasoning_tokens ?? raw.reasoning_tokens);
+  const hasInputText = inDetails.text_tokens != null || inDetails.textTokens != null;
+  const inputImage = numToken(inDetails.image_tokens ?? inDetails.imageTokens);
+  let inputText = numToken(inDetails.text_tokens ?? inDetails.textTokens);
+  if (!hasInputText) inputText = Math.max(0, input - cached - inputImage);
+  const hasOutputImage = outDetails.image_tokens != null || outDetails.imageTokens != null;
+  const isImageGen = inDetails.image_tokens != null || inDetails.imageTokens != null;
+  let outputImage = numToken(outDetails.image_tokens ?? outDetails.imageTokens);
+  let outputText = 0;
+  if (hasOutputImage) outputText = Math.max(0, output - outputImage - reasoning);
+  else if (isImageGen) {
+    outputImage = Math.max(0, output - reasoning);
+    outputText = 0;
+  } else {
+    outputText = Math.max(0, output - reasoning);
+    outputImage = 0;
+  }
   return {
     ...raw,
-    input_tokens: Number.isFinite(input) ? input : 0,
-    output_tokens: Number.isFinite(output) ? output : 0,
-    total_tokens: Number.isFinite(total) ? total : 0,
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: total,
+    input_text_tokens: inputText,
+    input_image_tokens: inputImage,
+    output_text_tokens: outputText,
+    output_image_tokens: outputImage,
+    cached_tokens: cached,
+    reasoning_tokens: reasoning,
+    text_tokens: inputText,
+    image_tokens: inputImage,
   };
 }
 
 export function formatOpenAIUsage(usage) {
-  const input = usage?.input_tokens ?? 0;
-  const output = usage?.output_tokens ?? 0;
-  const total = usage?.total_tokens ?? 0;
-  return `input_tokens ${input} · output_tokens ${output} · total_tokens ${total}`;
+  return OPENAI_USAGE_FIELDS.map(([key, label]) => `${label} ${usage?.[key] ?? 0}`).join(" · ");
 }
 
 export async function writeOpenAILog({
   label = "",
-  method,
-  url,
-  headers,
   requestBody,
-  status,
   responseBody,
   error,
   elapsedMs,
@@ -134,23 +187,13 @@ export async function writeOpenAILog({
     seq += 1;
     const { date, time, stamp } = nowParts();
     const name = `${date}_${time}_${pad(seq, 4)}_${safeName(label)}.log`;
+    const prompt = typeof requestBody === "string" ? requestBody : "";
     const payload = {
       time: stamp,
       label: label || "",
-      elapsed_ms: elapsedMs ?? null,
-      usage,
-      request: {
-        method: String(method || "POST").toUpperCase(),
-        url,
-        headers: headers || null,
-        body: requestBody ?? null,
-      },
-      response: {
-        status: status ?? null,
-        error: error ? String(error) : null,
-        body: responseBody ?? null,
-      },
+      prompt,
     };
+    if (error) payload.error = String(error);
     fs.writeFileSync(path.join(logDir, name), dump(payload), "utf8");
   } catch {
     // 写日志失败不影响主流程

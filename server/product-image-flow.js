@@ -55,22 +55,39 @@ function uniqueLines(list) {
   return out;
 }
 
-export function productImageFlags({ imageKind = "main", index = 0 } = {}) {
-  const whiteBackground = imageKind === "main" && Number(index) === 0;
+function hasOwnParams(params = {}) {
+  return Boolean(
+    params.platform
+    || params.country
+    || params.language
+    || params.aspect_ratio
+    || params.image_type
+    || (params.excluded_copy != null && String(params.excluded_copy) !== ""),
+  );
+}
+
+export function productImageFlags({ imageKind = "main", index = 0, params = {} } = {}) {
+  const custom = hasOwnParams(params);
+  const whiteBackground = !custom && imageKind === "main" && Number(index) === 0;
+  const imageType = String(params.image_type || "").trim();
+  const allowedType = ["with_text", "white_background", "no_text"].includes(imageType) ? imageType : "";
   return {
-    image_type: whiteBackground ? "white_background" : "with_text",
-    aspect_ratio: "1:1",
-    excluded_copy: "",
+    image_type: allowedType || (whiteBackground ? "white_background" : "with_text"),
+    aspect_ratio: String(params.aspect_ratio || "").trim() || "1:1",
+    excluded_copy: String(params.excluded_copy || "").trim(),
   };
 }
 
-export function buildProductImagePrompt({ site = "TH", imageKind = "main", index = 0 } = {}) {
+export function buildProductImagePrompt({ site = "TH", imageKind = "main", index = 0, params = {} } = {}) {
   const market = marketLanguage(site);
-  const flags = productImageFlags({ imageKind, index });
+  const flags = productImageFlags({ imageKind, index, params });
+  const platform = String(params.platform || "").trim() || "TikTok Shop";
+  const country = String(params.country || "").trim() || countryName(site);
+  const language = String(params.language || "").trim() || market.label;
   const user = PRODUCT_IMAGE_USER_PROMPT_TEMPLATE
-    .replaceAll("{platform}", "TikTok Shop")
-    .replaceAll("{country}", countryName(site))
-    .replaceAll("{language}", market.label)
+    .replaceAll("{platform}", platform)
+    .replaceAll("{country}", country)
+    .replaceAll("{language}", language)
     .replaceAll("{aspect_ratio}", flags.aspect_ratio)
     .replaceAll("{image_type}", flags.image_type)
     .replaceAll("{excluded_copy}", flags.excluded_copy);
@@ -78,12 +95,19 @@ export function buildProductImagePrompt({ site = "TH", imageKind = "main", index
     system: PRODUCT_IMAGE_SYSTEM_PROMPT,
     user,
     flags: {
-      platform: "TikTok Shop",
-      country: countryName(site),
-      language: market.label,
+      platform,
+      country,
+      language,
       ...flags,
     },
   };
+}
+
+function sizeForAspect(ratio) {
+  const value = String(ratio || "1:1");
+  if (["3:4", "4:5", "9:16"].includes(value)) return "1024x1536";
+  if (["4:3", "5:4", "16:9"].includes(value)) return "1536x1024";
+  return "";
 }
 
 function normalizeAnalysis(parsed, flags) {
@@ -97,8 +121,8 @@ function normalizeAnalysis(parsed, flags) {
   };
 }
 
-async function analyzeProductImage(source, { site, imageKind, index }) {
-  const { system, user, flags } = buildProductImagePrompt({ site, imageKind, index });
+async function analyzeProductImage(source, { site, imageKind, index, params }) {
+  const { system, user, flags } = buildProductImagePrompt({ site, imageKind, index, params });
   const dataUri = fileToDataUri(source.file);
   const input = [
     { role: "system", content: [{ type: "input_text", text: system }] },
@@ -134,7 +158,7 @@ async function analyzeProductImage(source, { site, imageKind, index }) {
   return { analysis: normalizeAnalysis(parsed, flags), flags };
 }
 
-async function productGenerate({ sources, site, imageKind, outputDir, onLog, onlyFilename = "" }) {
+async function productGenerate({ sources, site, imageKind, outputDir, onLog, onlyFilename = "", params = {} }) {
   const cfg = openaiConfig();
   fs.mkdirSync(outputDir, { recursive: true });
   const kind = imageKind === "sku" ? "sku" : "main";
@@ -166,6 +190,7 @@ async function productGenerate({ sources, site, imageKind, outputDir, onLog, onl
         site,
         imageKind: kind,
         index: originalIndex,
+        params,
       }));
     } catch (error) {
       const err = new Error(`${source.filename} 分析失败：${error.message}`);
@@ -180,7 +205,7 @@ async function productGenerate({ sources, site, imageKind, outputDir, onLog, onl
       const generated = await editImageWithReferences({
         prompt: analysis.image_edit_prompt,
         files: [inputFile],
-        size: cfg.imageSize || "1024x1024",
+        size: sizeForAspect(flags.aspect_ratio) || cfg.imageSize || "1024x1024",
         logLabel: `${kind === "sku" ? "SKU" : "主图"}生图-${source.filename}-images-edits`,
       });
       await saveGeneratedImage(generated, dest);
@@ -226,13 +251,13 @@ async function productGenerate({ sources, site, imageKind, outputDir, onLog, onl
   return { files, report };
 }
 
-export async function runProductImageFlow({ files = [], urls = [], site = "TH", imageKind = "main", onLog } = {}) {
+export async function runProductImageFlow({ files = [], urls = [], site = "TH", imageKind = "main", params = {}, onLog } = {}) {
   const kind = imageKind === "sku" ? "sku" : "main";
   const sources = mapSourceFiles(files, urls);
   if (!sources.length) throw new Error(kind === "sku" ? "没有可处理的 SKU 图" : "没有可处理的商品主图");
   log(onLog, `product_run：${kind} · analyze → image2 · ${sources.length} 张`);
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), `miaoshou-${kind}-api-`));
-  const generated = await productGenerate({ sources, site, imageKind: kind, outputDir, onLog });
+  const generated = await productGenerate({ sources, site, imageKind: kind, outputDir, onLog, params });
   log(onLog, `product-generate 完成 · ${generated.files.length} 张`);
   return {
     kind,
@@ -249,11 +274,12 @@ export async function runProductGenerate({
   imageKind = "main",
   outputDir = "",
   onlyFilename = "",
+  params = {},
   onLog,
 } = {}) {
   const kind = imageKind === "sku" ? "sku" : "main";
   const sources = mapSourceFiles(files, urls);
   if (!sources.length) throw new Error(kind === "sku" ? "没有可处理的 SKU 图" : "没有可处理的商品主图");
   const dir = outputDir || fs.mkdtempSync(path.join(os.tmpdir(), "miaoshou-product-api-"));
-  return productGenerate({ sources, site, imageKind: kind, outputDir: dir, onLog, onlyFilename });
+  return productGenerate({ sources, site, imageKind: kind, outputDir: dir, onLog, onlyFilename, params });
 }

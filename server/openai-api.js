@@ -368,9 +368,6 @@ async function openaiFetch(url, { method = "GET", headers = {}, body, timeoutMs 
   } catch (error) {
     await writeOpenAILog({
       label: logLabel,
-      method,
-      url,
-      headers: nextHeaders,
       requestBody: requestSnapshot,
       error: error.name === "AbortError" ? "OpenAI 请求超时" : error.message,
       elapsedMs: Date.now() - started,
@@ -388,23 +385,15 @@ async function openaiFetch(url, { method = "GET", headers = {}, body, timeoutMs 
   } catch {
     await writeOpenAILog({
       label: logLabel,
-      method,
-      url,
-      headers: nextHeaders,
       requestBody: requestSnapshot,
-      status: response.status,
-      responseBody: raw,
+      error: `OpenAI 返回不是 JSON：${String(raw).slice(0, 300)}`,
       elapsedMs: Date.now() - started,
     });
     throw new Error(`OpenAI 返回不是 JSON：${raw.slice(0, 300)}`);
   }
   await writeOpenAILog({
     label: logLabel,
-    method,
-    url,
-    headers: nextHeaders,
     requestBody: requestSnapshot,
-    status: response.status,
     responseBody: data,
     elapsedMs: Date.now() - started,
   });

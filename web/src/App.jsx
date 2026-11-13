@@ -3,6 +3,19 @@ import { api } from "./api";
 import PricingSetup from "./PricingSetup.jsx";
 import FxRates from "./FxRates.jsx";
 import FreightTable from "./FreightTable.jsx";
+import ImageStudio from "./ImageStudio.jsx";
+
+const TOKEN_FIELDS = [
+  ["input_tokens", "总输入 Token"],
+  ["output_tokens", "总输出 Token"],
+  ["total_tokens", "总 Token"],
+  ["input_text_tokens", "输入文本 Token"],
+  ["input_image_tokens", "输入图片 Token"],
+  ["output_text_tokens", "输出文本 Token"],
+  ["output_image_tokens", "输出图片 Token"],
+  ["cached_tokens", "缓存输入 Token"],
+  ["reasoning_tokens", "推理 Token"],
+];
 
 const NAV = [
   { group: "工作台", items: [
@@ -11,6 +24,7 @@ const NAV = [
     { id: "common", title: "公共采集箱", icon: "▣" },
     { id: "tiktok", title: "TK采集箱", icon: "⌁" },
     { id: "tiktok-pro", title: "TK采集箱Pro", icon: "⚡" },
+    { id: "studio", title: "电商作图", icon: "◈" },
   ]},
   { group: "配置", items: [
     { id: "pricing", title: "定价模板", icon: "￥" },
@@ -1057,6 +1071,10 @@ export default function App() {
           <FreightTable notify={notify} />
         )}
 
+        {view === "studio" && (
+          <ImageStudio notify={notify} />
+        )}
+
         {view === "shops" && (
           <div className="content">
             <div className="heading"><div><h1>店铺与站点</h1><p>从妙手拉取已授权店铺，并给每个店铺绑定定价模板。同步不会清掉已绑定的模板。</p></div>
@@ -1242,18 +1260,20 @@ export default function App() {
                   <div className="usage-box">
                     <div className="usage-head">OpenAI tokens</div>
                     <div className="usage-totals">
-                      <span>input_tokens {(activeTask.openaiUsage?.input_tokens ?? 0)}</span>
-                      <span>output_tokens {(activeTask.openaiUsage?.output_tokens ?? 0)}</span>
-                      <span>total_tokens {(activeTask.openaiUsage?.total_tokens ?? 0)}</span>
+                      {TOKEN_FIELDS.map(([key, label]) => (
+                        <span key={key}>{label} {(activeTask.openaiUsage?.[key] ?? 0)}</span>
+                      ))}
                     </div>
                     {(activeTask.openaiUsage?.calls || []).length ? (
                       <div className="usage-calls">
                         {(activeTask.openaiUsage.calls || []).map((call, i) => (
                           <div className="usage-call" key={`${call.t}-${i}`}>
-                            <span>{call.label}</span>
-                            <span>input_tokens {call.input_tokens}</span>
-                            <span>output_tokens {call.output_tokens}</span>
-                            <span>total_tokens {call.total_tokens}</span>
+                            <div className="usage-call-label">{call.label}</div>
+                            <div className="usage-call-nums">
+                              {TOKEN_FIELDS.map(([key, label]) => (
+                                <span key={key}>{label} {call[key] ?? 0}</span>
+                              ))}
+                            </div>
                           </div>
                         ))}
                       </div>
